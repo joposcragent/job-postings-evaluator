@@ -1,0 +1,19 @@
+#server:
+#  port: 8089
+
+management:
+  endpoint:
+    enabled-by-default: true
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+
+spring:
+  application:
+    name: job-postings-crud
+  datasource:
+    url: jdbc:postgresql://localhost:5432/joposcragent
+    username: postgres
+    password: postgres
+
