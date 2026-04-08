@@ -1,5 +1,5 @@
-#server:
-#  port: 8089
+server:
+  port: 8082
 
 management:
   endpoint:
@@ -11,9 +11,14 @@ management:
 
 spring:
   application:
-    name: job-postings-crud
+    name: job-postings-evaluator
   datasource:
     url: jdbc:postgresql://localhost:5432/joposcragent
     username: postgres
     password: postgres
 
+joposcragent:
+  settings-manager:
+    base-url: http://localhost:8080
+  sentence-transformer:
+    base-url: http://localhost:8000/sentence-transformer

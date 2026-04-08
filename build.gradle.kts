@@ -45,6 +45,7 @@ dependencies {
 	testImplementation("org.testcontainers:testcontainers-junit-jupiter")
 	testImplementation("org.testcontainers:postgresql:1.20.4")
 	testImplementation("io.mockk:mockk-jvm:1.14.6")
+	testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
@@ -95,7 +96,6 @@ jooq {
 
 sourceSets["main"].java.srcDir("build/generated-src/jooq/main")
 
-// Run `./gradlew generateJooq` when the DB schema changes
 tasks.named("compileKotlin") {
 	dependsOn("generateJooq")
 }
