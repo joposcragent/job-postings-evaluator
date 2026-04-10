@@ -10,6 +10,7 @@ import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.SettingsMan
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.dto.JobPostingsUidsEvaluatedItem
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.dto.JobPostingsUidsEvaluatedList
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.dto.JobPostingsUidsList
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.repository.PendingEvaluationResult
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.repository.PostingEvaluationRepository
 import java.util.UUID
 
@@ -30,7 +31,6 @@ class EvaluateSyncService(
 			}
 		}
 		val thresholdGeneral = settingsManagerClient.relevanceThreshold("GENERAL")
-		val thresholdTitle = settingsManagerClient.relevanceThreshold("TITLE")
 		val referenceVector = settingsManagerClient.getReferenceVector()
 
 		val rows = postingEvaluationRepository.findEligibleForEvaluation(uuids)
@@ -41,32 +41,46 @@ class EvaluateSyncService(
 			)
 		}
 
-		val updates = LinkedHashMap<UUID, EvaluationStatus>()
-		val pendingRows = rows.filter { it.evaluationStatus == EvaluationStatus.PENDING }
-		val newRows = rows.filter { it.evaluationStatus == EvaluationStatus.NEW }
-
-		for (row in pendingRows) {
-			val sim = similarityOrZero(row.contentVector, referenceVector)
-			val next = if (sim > thresholdGeneral) EvaluationStatus.RELEVANT else EvaluationStatus.IRRELEVANT
-			updates[row.uuid] = next
+		val sortedRows = rows.sortedBy { it.uuid }
+		val pendingDbWrites = mutableListOf<PendingEvaluationResult>()
+		val out = sortedRows.map { row ->
+			when (row.evaluationStatus) {
+				EvaluationStatus.NEW -> JobPostingsUidsEvaluatedItem(row.uuid, EvaluationStatus.NEW)
+				EvaluationStatus.PENDING -> {
+					val vectorComputed = row.contentVector.isNullOrEmpty()
+					val contentVector: Array<Float> = if (vectorComputed) {
+						val text = row.content ?: ""
+						val vec = sentenceTransformerClient.vectorize(text)
+						vec.map { it.toFloat() }.toTypedArray()
+					} else {
+						row.contentVector!!
+					}
+					val left = contentVector.map { it.toDouble() }
+					val similarity = sentenceTransformerClient.cosineSimilarity(left, referenceVector)
+					val relevance = similarity.toFloat()
+					val next = if (similarity >= thresholdGeneral) {
+						EvaluationStatus.RELEVANT
+					} else {
+						EvaluationStatus.IRRELEVANT
+					}
+					pendingDbWrites.add(
+						PendingEvaluationResult(
+							uuid = row.uuid,
+							evaluationStatus = next,
+							relevance = relevance,
+							contentVector = if (vectorComputed) contentVector else null,
+						),
+					)
+					JobPostingsUidsEvaluatedItem(row.uuid, next)
+				}
+				else -> throw IllegalStateException("Unexpected evaluation status: ${row.evaluationStatus}")
+			}
 		}
-		for (row in newRows) {
-			val sim = similarityOrZero(row.titleVector, referenceVector)
-			val next = if (sim > thresholdTitle) EvaluationStatus.PENDING else EvaluationStatus.IRRELEVANT
-			updates[row.uuid] = next
-		}
 
-		postingEvaluationRepository.updateEvaluationStatuses(updates)
+		postingEvaluationRepository.applyPendingEvaluationResults(pendingDbWrites)
 
-		val out = updates.map { (uuid, status) -> JobPostingsUidsEvaluatedItem(uuid, status) }
 		return JobPostingsUidsEvaluatedList(out)
 	}
 
-	private fun similarityOrZero(vector: Array<Float>?, reference: List<Double>): Double {
-		val left = vector?.toDoubleList().orEmpty()
-		if (left.isEmpty()) return 0.0
-		return sentenceTransformerClient.cosineSimilarity(left, reference)
-	}
-
-	private fun Array<Float>.toDoubleList(): List<Double> = map { it.toDouble() }
+	private fun Array<Float>?.isNullOrEmpty(): Boolean = this == null || this.isEmpty()
 }

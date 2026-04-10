@@ -16,25 +16,24 @@ sequenceDiagram
 
   Client->>Evaluator: POST /evaluate/sync
   Evaluator->>Settings: GET relevance-thresholds/GENERAL
-  Evaluator->>Settings: GET relevance-thresholds/TITLE
   Evaluator->>Settings: GET reference-context
   Evaluator->>DB: SELECT postings WHERE uuid IN ... AND status IN NEW,PENDING
   alt нет строк
     Evaluator-->>Client: 404
   end
   loop PENDING записи
+    alt content_vector пуст
+      Evaluator->>ST: POST /text/vectorize (текст из content)
+      ST-->>Evaluator: вектор
+    end
     Evaluator->>ST: POST vectors/cosine-similarity content_vector vs reference
-    Evaluator->>Evaluator: sim vs threshold_general -> RELEVANT или IRRELEVANT
+    Evaluator->>Evaluator: similarity, relevance в БД, порог GENERAL -> RELEVANT или IRRELEVANT
   end
-  loop NEW записи
-    Evaluator->>ST: POST vectors/cosine-similarity title_vector vs reference
-    Evaluator->>Evaluator: sim vs threshold_title -> PENDING или IRRELEVANT
-  end
-  Evaluator->>DB: UPDATE evaluation_status
-  Evaluator-->>Client: 200 JobPostingsUidsEvaluatedList
+  Evaluator->>DB: UPDATE relevance, content_vector при необходимости, evaluation_status
+  Evaluator-->>Client: 200 JobPostingsUidsEvaluatedList (все отобранные uuid и статусы)
 ```
 
-Отсутствие вектора в строке трактуется как нулевое сходство (без вызова `sentence-transformer` для пустого вектора). Если эталонный контекст не задан (`GET /reference-context` возвращает 202 или вектор пуст), запрос завершится ошибкой.
+Записи в статусе `NEW` попадают в ответ без изменения в БД; обрабатываются только `PENDING` по шагам выше. Если эталонный контекст не задан (`GET /reference-context` возвращает 202 или вектор пуст), запрос завершится ошибкой.
 
 ## Сборка
 
