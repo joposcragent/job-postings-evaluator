@@ -22,7 +22,8 @@ import org.springframework.web.context.WebApplicationContext
 import org.testcontainers.junit.jupiter.Testcontainers
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.EvaluationSettings
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.EvaluationSettingsException
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SentenceTransformerHttpClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.CosineSimilarityDto
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SentenceTransformerFeignClient
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SettingsHttpClient
 import java.util.UUID
 
@@ -34,7 +35,7 @@ class EvaluateSyncIntegrationTest @Autowired constructor(
 	private val webApplicationContext: WebApplicationContext,
 	private val jdbcTemplate: JdbcTemplate,
 	private val settingsHttpClient: SettingsHttpClient,
-	private val sentenceTransformerHttpClient: SentenceTransformerHttpClient,
+	private val sentenceTransformerFeignClient: SentenceTransformerFeignClient,
 ) {
 
 	private lateinit var mockMvc: MockMvc
@@ -43,7 +44,7 @@ class EvaluateSyncIntegrationTest @Autowired constructor(
 
 	@BeforeEach
 	fun setup() {
-		reset(settingsHttpClient, sentenceTransformerHttpClient)
+		reset(settingsHttpClient, sentenceTransformerFeignClient)
 		mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build()
 		jdbcTemplate.update("DELETE FROM job_postings.postings")
 	}
@@ -54,8 +55,8 @@ class EvaluateSyncIntegrationTest @Autowired constructor(
 		whenever(settingsHttpClient.loadForSync()).thenReturn(
 			EvaluationSettings(threshold = 0.5, referenceVector = listOf(0.1, 0.2)),
 		)
-		whenever(sentenceTransformerHttpClient.vectorize(any())).thenReturn(listOf(1.0, 0.0))
-		whenever(sentenceTransformerHttpClient.cosineSimilarity(any(), any())).thenReturn(0.91)
+		whenever(sentenceTransformerFeignClient.vectorize(any())).thenReturn(listOf(1.0, 0.0))
+		whenever(sentenceTransformerFeignClient.cosineSimilarity(any())).thenReturn(CosineSimilarityDto(0.91))
 
 		mockMvc.perform(
 			post("/evaluate/sync/list")

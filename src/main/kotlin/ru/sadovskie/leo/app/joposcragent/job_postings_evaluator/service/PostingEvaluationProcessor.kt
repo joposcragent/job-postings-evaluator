@@ -1,11 +1,15 @@
 package ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.service
 
+import feign.FeignException
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.EvaluationSettings
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SentenceTransformerHttpClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.ExternalServiceException
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SentenceTransformerFeignClient
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SettingsHttpClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.TextVectorizeRequest
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.VectorsPairRequest
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.repository.PostingEvaluationRepository
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.web.SyncEvaluationResultItem
 import ru.sadovskie.leo.app.joposcragent.jobpostings.jooq.enums.EvaluationStatus
@@ -15,7 +19,7 @@ import java.util.UUID
 @Service
 class PostingEvaluationProcessor(
 	private val settingsHttpClient: SettingsHttpClient,
-	private val sentenceTransformerHttpClient: SentenceTransformerHttpClient,
+	private val sentenceTransformerFeignClient: SentenceTransformerFeignClient,
 	private val postingEvaluationRepository: PostingEvaluationRepository,
 ) {
 
@@ -47,10 +51,7 @@ class PostingEvaluationProcessor(
 		val out = ArrayList<SyncEvaluationResultItem>(rows.size)
 		for (row in rows) {
 			val contentVector = resolveContentVector(row)
-			val similarity = sentenceTransformerHttpClient.cosineSimilarity(
-				contentVector,
-				settings.referenceVector,
-			)
+			val similarity = cosineSimilarityOrThrow(contentVector, settings.referenceVector)
 			val status = if (similarity >= settings.threshold) {
 				EvaluationStatus.RELEVANT
 			} else {
@@ -74,6 +75,26 @@ class PostingEvaluationProcessor(
 			return existing.map { it.toDouble() }
 		}
 		val text = row.content ?: ""
-		return sentenceTransformerHttpClient.vectorize(text)
+		return vectorizeOrThrow(text)
 	}
+
+	private fun vectorizeOrThrow(text: String): List<Double> =
+		try {
+			sentenceTransformerFeignClient.vectorize(TextVectorizeRequest(text))
+		} catch (e: FeignException) {
+			throw ExternalServiceException(
+				"sentence-transformer vectorize failed: ${e.status()} ${e.contentUTF8()}",
+				e,
+			)
+		}
+
+	private fun cosineSimilarityOrThrow(left: List<Double>, right: List<Double>): Double =
+		try {
+			sentenceTransformerFeignClient.cosineSimilarity(VectorsPairRequest(left, right)).similarity
+		} catch (e: FeignException) {
+			throw ExternalServiceException(
+				"sentence-transformer cosine-similarity failed: ${e.status()} ${e.contentUTF8()}",
+				e,
+			)
+		}
 }

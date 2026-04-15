@@ -12,8 +12,4 @@ class HttpClientsConfiguration(
 	@Bean
 	fun settingsManagerRestClient(): RestClient =
 		RestClient.builder().baseUrl(properties.settingsManagerBaseUrl).build()
-
-	@Bean
-	fun sentenceTransformerRestClient(): RestClient =
-		RestClient.builder().baseUrl(properties.sentenceTransformerBaseUrl).build()
 }
