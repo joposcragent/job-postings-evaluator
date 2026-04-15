@@ -33,6 +33,12 @@ class EvaluateController(
 		return ResponseEntity.ok().build()
 	}
 
+	@PostMapping("/async/batch")
+	fun asyncBatch(@Valid @RequestBody body: BatchAsyncProcessingParametersRequest): ResponseEntity<Void> {
+		evaluationService.submitAsyncBatch(body.size)
+		return ResponseEntity.ok().build()
+	}
+
 	@PostMapping("/async/{jobPostingUuid}")
 	fun asyncOne(@PathVariable jobPostingUuid: UUID): ResponseEntity<Void> {
 		evaluationService.submitAsyncOne(jobPostingUuid)

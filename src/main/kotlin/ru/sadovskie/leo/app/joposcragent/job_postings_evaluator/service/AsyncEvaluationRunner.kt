@@ -18,4 +18,9 @@ class AsyncEvaluationRunner(
 	fun runOne(jobPostingUuid: UUID) {
 		postingEvaluationProcessor.runAsync(listOf(jobPostingUuid))
 	}
+
+	@Async
+	fun runBatch(size: Int) {
+		postingEvaluationProcessor.runAsyncBatch(size)
+	}
 }

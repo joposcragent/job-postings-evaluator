@@ -14,7 +14,7 @@ plugins {
 }
 
 group = "ru.sadovskie.leo.app.joposcragent"
-version = "0.0.1-SNAPSHOT"
+version = "1.2.0-SNAPSHOT"
 
 java {
 	toolchain {

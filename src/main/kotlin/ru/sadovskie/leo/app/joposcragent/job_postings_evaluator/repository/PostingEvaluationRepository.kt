@@ -30,6 +30,20 @@ class PostingEvaluationRepository(
 			.fetch()
 	}
 
+	fun findFirstEvaluatable(limit: Int): List<PostingsRecord> {
+		if (limit <= 0) return emptyList()
+		return dsl.selectFrom(Tables.POSTINGS)
+			.where(
+				Tables.POSTINGS.EVALUATION_STATUS.`in`(
+					EvaluationStatus.NEW,
+					EvaluationStatus.PENDING,
+				),
+			)
+			.orderBy(Tables.POSTINGS.UUID)
+			.limit(limit)
+			.fetch()
+	}
+
 	@Transactional(propagation = Propagation.REQUIRES_NEW)
 	fun updateAfterEvaluation(
 		uuid: UUID,

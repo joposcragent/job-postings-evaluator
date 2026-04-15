@@ -24,4 +24,8 @@ class EvaluationService(
 	fun submitAsyncOne(jobPostingUuid: UUID) {
 		asyncEvaluationRunner.runOne(jobPostingUuid)
 	}
+
+	fun submitAsyncBatch(size: Int) {
+		asyncEvaluationRunner.runBatch(size)
+	}
 }

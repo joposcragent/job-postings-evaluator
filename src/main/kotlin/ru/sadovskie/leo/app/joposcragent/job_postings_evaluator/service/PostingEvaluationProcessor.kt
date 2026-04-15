@@ -41,6 +41,19 @@ class PostingEvaluationProcessor(
 		evaluateRows(settings, rows)
 	}
 
+	fun runAsyncBatch(limit: Int) {
+		val settings = settingsHttpClient.loadForAsync() ?: return
+		val rows = postingEvaluationRepository.findFirstEvaluatable(limit)
+		if (rows.isEmpty()) {
+			log.warn("Async batch evaluation finished: no postings in NEW or PENDING")
+			return
+		}
+		val results = evaluateRows(settings, rows)
+		for (item in results) {
+			log.info("Async batch: evaluated posting {} -> {}", item.uuid, item.status)
+		}
+	}
+
 	private fun evaluateRows(
 		settings: EvaluationSettings,
 		rows: List<PostingsRecord>,
