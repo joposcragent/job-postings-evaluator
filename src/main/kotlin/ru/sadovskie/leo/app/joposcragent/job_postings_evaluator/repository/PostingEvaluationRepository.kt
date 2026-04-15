@@ -2,6 +2,8 @@ package ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.repository
 
 import org.jooq.DSLContext
 import org.springframework.stereotype.Repository
+import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Transactional
 import ru.sadovskie.leo.app.joposcragent.jobpostings.jooq.Tables
 import ru.sadovskie.leo.app.joposcragent.jobpostings.jooq.enums.EvaluationStatus
 import ru.sadovskie.leo.app.joposcragent.jobpostings.jooq.tables.records.PostingsRecord
@@ -28,6 +30,7 @@ class PostingEvaluationRepository(
 			.fetch()
 	}
 
+	@Transactional(propagation = Propagation.REQUIRES_NEW)
 	fun updateAfterEvaluation(
 		uuid: UUID,
 		status: EvaluationStatus,

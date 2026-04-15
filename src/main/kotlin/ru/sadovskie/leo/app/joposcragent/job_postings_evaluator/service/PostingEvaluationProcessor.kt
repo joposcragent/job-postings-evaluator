@@ -3,7 +3,6 @@ package ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.service
 import feign.FeignException
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.EvaluationSettings
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.ExternalServiceException
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SentenceTransformerFeignClient
@@ -25,7 +24,6 @@ class PostingEvaluationProcessor(
 
 	private val log = LoggerFactory.getLogger(javaClass)
 
-	@Transactional
 	fun runSync(uuids: List<UUID>): List<SyncEvaluationResultItem> {
 		val settings = settingsHttpClient.loadForSync()
 		val rows = postingEvaluationRepository.findEvaluatableByUuids(uuids)
@@ -33,7 +31,6 @@ class PostingEvaluationProcessor(
 		return evaluateRows(settings, rows)
 	}
 
-	@Transactional
 	fun runAsync(uuids: List<UUID>) {
 		val settings = settingsHttpClient.loadForAsync() ?: return
 		val rows = postingEvaluationRepository.findEvaluatableByUuids(uuids)
