@@ -62,8 +62,6 @@ export JOPOSCRAGENT_SENTENCE_TRANSFORMER_BASE_URL=http://localhost:8000/sentence
 ./gradlew bootRun
 ```
 
-По умолчанию HTTP-порт приложения — **8082** (`server.port` в `application.yml`).
-
 ## Отладка
 
 - В IDE откройте проект как Gradle-модуль и запустите `JobPostingsEvaluatorApplication` с теми же переменными окружения или с `application-local.yml` (профиль `local` при необходимости добавьте сами).
