@@ -6,10 +6,48 @@ spring:
   flyway:
     enabled: false
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/joposcragent}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/joposcragent}
     username: ${SPRING_DATASOURCE_USERNAME:postgres}
     password: ${SPRING_DATASOURCE_PASSWORD:postgres}
 
 joposcragent:
-  settings-manager-base-url: ${JOPOSCRAGENT_SETTINGS_MANAGER_BASE_URL:http://localhost:8080}
-  sentence-transformer-base-url: ${JOPOSCRAGENT_SENTENCE_TRANSFORMER_BASE_URL:http://localhost:8000/sentence-transformer}
+  settings-manager-base-url: ${JOPOSCRAGENT_SETTINGS_MANAGER_BASE_URL:http://settings-manager:8080}
+  sentence-transformer-base-url: ${JOPOSCRAGENT_SENTENCE_TRANSFORMER_BASE_URL:http://sentence-transformer:8000/sentence-transformer}
+
+celery:
+  orchestrator:
+    base-url: ${CELERY_ORCHESTRATOR_BASE_URL:http://celery-orchestrator-api:8000}
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local,protozoa
+  datasource:
+    url: jdbc:postgresql://localhost:5432/joposcragent
+server:
+  port: 8089
+
+joposcragent:
+  settings-manager-base-url: http://localhost:8080
+  sentence-transformer-base-url: http://localhost:8000/sentence-transformer
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+
+celery:
+  orchestrator:
+    base-url: http://localhost:8001
+
+---
+spring:
+  config:
+    activate:
+      on-profile: protozoa
+
+celery:
+  orchestrator:
+    base-url: http://localhost:8090

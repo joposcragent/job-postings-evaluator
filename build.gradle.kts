@@ -11,10 +11,11 @@ plugins {
 	id("org.springframework.boot") version "4.0.5"
 	id("io.spring.dependency-management") version "1.1.7"
 	id("nu.studer.jooq") version "9.0"
+	jacoco
 }
 
 group = "ru.sadovskie.leo.app.joposcragent"
-version = "1.2.0-SNAPSHOT"
+version = "1.3.0"
 
 java {
 	toolchain {
@@ -122,4 +123,36 @@ tasks.register("buildImage") {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+	finalizedBy(tasks.jacocoTestReport)
+}
+
+val jacocoInstrumentedClasses =
+	files(sourceSets["main"].output.classesDirs).asFileTree.matching {
+		exclude("**/ru/sadovskie/leo/app/joposcragent/jobpostings/jooq/**")
+	}
+
+tasks.jacocoTestReport {
+	dependsOn(tasks.test)
+	classDirectories.setFrom(jacocoInstrumentedClasses)
+	reports {
+		xml.required.set(true)
+		html.required.set(true)
+	}
+}
+
+tasks.jacocoTestCoverageVerification {
+	dependsOn(tasks.jacocoTestReport)
+	classDirectories.setFrom(jacocoInstrumentedClasses)
+	violationRules {
+		rule {
+			limit {
+				counter = "LINE"
+				minimum = "0.60".toBigDecimal()
+			}
+		}
+	}
+}
+
+tasks.check {
+	dependsOn(tasks.jacocoTestCoverageVerification)
 }

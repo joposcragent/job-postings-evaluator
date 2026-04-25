@@ -5,6 +5,9 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.reset
 import org.mockito.kotlin.any
+import org.mockito.kotlin.eq
+import org.mockito.kotlin.times
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -25,6 +28,8 @@ import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.EvaluationS
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.CosineSimilarityDto
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SentenceTransformerFeignClient
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SettingsHttpClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.orchestration.OrchestrationFinishEventPublisher
+import ru.sadovskie.leo.app.joposcragent.jobpostings.jooq.enums.EvaluationStatus
 import java.util.UUID
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
@@ -36,6 +41,7 @@ class EvaluateSyncIntegrationTest @Autowired constructor(
 	private val jdbcTemplate: JdbcTemplate,
 	private val settingsHttpClient: SettingsHttpClient,
 	private val sentenceTransformerFeignClient: SentenceTransformerFeignClient,
+	private val orchestrationFinishEventPublisher: OrchestrationFinishEventPublisher,
 ) {
 
 	private lateinit var mockMvc: MockMvc
@@ -44,7 +50,7 @@ class EvaluateSyncIntegrationTest @Autowired constructor(
 
 	@BeforeEach
 	fun setup() {
-		reset(settingsHttpClient, sentenceTransformerFeignClient)
+		reset(settingsHttpClient, sentenceTransformerFeignClient, orchestrationFinishEventPublisher)
 		mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build()
 		jdbcTemplate.update("DELETE FROM job_postings.postings")
 	}
@@ -88,6 +94,30 @@ class EvaluateSyncIntegrationTest @Autowired constructor(
 				.content("""{"list":["$postingUuid"]}"""),
 		)
 			.andExpect(status().isNotFound)
+	}
+
+	@Test
+	fun `sync one with correlation header publishes success once`() {
+		val correlationId = UUID.randomUUID()
+		insertPosting(postingUuid, "NEW", "hello job")
+		whenever(settingsHttpClient.loadForSync()).thenReturn(
+			EvaluationSettings(threshold = 0.5, referenceVector = listOf(0.1, 0.2)),
+		)
+		whenever(sentenceTransformerFeignClient.vectorize(any())).thenReturn(listOf(1.0, 0.0))
+		whenever(sentenceTransformerFeignClient.cosineSimilarity(any())).thenReturn(CosineSimilarityDto(0.91))
+
+		mockMvc.perform(
+			post("/evaluate/sync/$postingUuid")
+				.header("X-Joposcragent-correlationId", correlationId.toString()),
+		)
+			.andExpect(status().isOk)
+			.andExpect(jsonPath("$.status").value("RELEVANT"))
+
+		verify(orchestrationFinishEventPublisher, times(1)).publishSuccess(
+			eq(correlationId),
+			eq(postingUuid),
+			eq(EvaluationStatus.RELEVANT),
+		)
 	}
 
 	@Test

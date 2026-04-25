@@ -7,6 +7,7 @@ import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.service.EvaluationService
@@ -24,8 +25,11 @@ class EvaluateController(
 		evaluationService.evaluateSyncList(body.list)
 
 	@PostMapping("/sync/{jobPostingUuid}", produces = [MediaType.APPLICATION_JSON_VALUE])
-	fun syncOne(@PathVariable jobPostingUuid: UUID): SyncSingleEvaluationResponse =
-		SyncSingleEvaluationResponse(evaluationService.evaluateSyncOne(jobPostingUuid))
+	fun syncOne(
+		@PathVariable jobPostingUuid: UUID,
+		@RequestHeader(name = "X-Joposcragent-correlationId", required = false) correlationId: UUID?,
+	): SyncSingleEvaluationResponse =
+		SyncSingleEvaluationResponse(evaluationService.evaluateSyncOne(jobPostingUuid, correlationId))
 
 	@PostMapping("/async/list")
 	fun asyncList(@Valid @RequestBody body: UuidsListRequest): ResponseEntity<Void> {
@@ -40,8 +44,11 @@ class EvaluateController(
 	}
 
 	@PostMapping("/async/{jobPostingUuid}")
-	fun asyncOne(@PathVariable jobPostingUuid: UUID): ResponseEntity<Void> {
-		evaluationService.submitAsyncOne(jobPostingUuid)
+	fun asyncOne(
+		@PathVariable jobPostingUuid: UUID,
+		@RequestHeader(name = "X-Joposcragent-correlationId", required = false) correlationId: UUID?,
+	): ResponseEntity<Void> {
+		evaluationService.submitAsyncOne(jobPostingUuid, correlationId)
 		return ResponseEntity.ok().build()
 	}
 }

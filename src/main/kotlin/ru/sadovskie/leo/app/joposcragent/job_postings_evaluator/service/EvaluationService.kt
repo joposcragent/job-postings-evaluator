@@ -14,15 +14,15 @@ class EvaluationService(
 	fun evaluateSyncList(uuids: List<UUID>): List<SyncEvaluationResultItem> =
 		postingEvaluationProcessor.runSync(uuids)
 
-	fun evaluateSyncOne(jobPostingUuid: UUID): EvaluationStatus =
-		postingEvaluationProcessor.runSync(listOf(jobPostingUuid)).single().status
+	fun evaluateSyncOne(jobPostingUuid: UUID, correlationId: UUID? = null): EvaluationStatus =
+		postingEvaluationProcessor.runSyncOne(jobPostingUuid, correlationId)
 
 	fun submitAsyncList(uuids: List<UUID>) {
 		asyncEvaluationRunner.runList(uuids)
 	}
 
-	fun submitAsyncOne(jobPostingUuid: UUID) {
-		asyncEvaluationRunner.runOne(jobPostingUuid)
+	fun submitAsyncOne(jobPostingUuid: UUID, correlationId: UUID? = null) {
+		asyncEvaluationRunner.runOne(jobPostingUuid, correlationId)
 	}
 
 	fun submitAsyncBatch(size: Int) {

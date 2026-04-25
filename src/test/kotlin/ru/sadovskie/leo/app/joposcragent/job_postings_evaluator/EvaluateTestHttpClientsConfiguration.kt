@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Primary
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SentenceTransformerFeignClient
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SettingsHttpClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.orchestration.OrchestrationFinishEventPublisher
 
 @TestConfiguration(proxyBeanMethods = false)
 class EvaluateTestHttpClientsConfiguration {
@@ -19,4 +20,9 @@ class EvaluateTestHttpClientsConfiguration {
 	@Primary
 	fun sentenceTransformerFeignClient(): SentenceTransformerFeignClient =
 		Mockito.mock(SentenceTransformerFeignClient::class.java)
+
+	@Bean
+	@Primary
+	fun orchestrationFinishEventPublisher(): OrchestrationFinishEventPublisher =
+		Mockito.mock(OrchestrationFinishEventPublisher::class.java)
 }

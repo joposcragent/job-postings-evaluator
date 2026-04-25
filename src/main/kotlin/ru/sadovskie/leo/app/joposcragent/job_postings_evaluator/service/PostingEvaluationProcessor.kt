@@ -9,6 +9,7 @@ import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SentenceTra
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.SettingsHttpClient
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.TextVectorizeRequest
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.http.VectorsPairRequest
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.orchestration.OrchestrationFinishEventPublisher
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.repository.PostingEvaluationRepository
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.web.SyncEvaluationResultItem
 import ru.sadovskie.leo.app.joposcragent.jobpostings.jooq.enums.EvaluationStatus
@@ -20,6 +21,7 @@ class PostingEvaluationProcessor(
 	private val settingsHttpClient: SettingsHttpClient,
 	private val sentenceTransformerFeignClient: SentenceTransformerFeignClient,
 	private val postingEvaluationRepository: PostingEvaluationRepository,
+	private val orchestrationFinishEventPublisher: OrchestrationFinishEventPublisher,
 ) {
 
 	private val log = LoggerFactory.getLogger(javaClass)
@@ -31,7 +33,45 @@ class PostingEvaluationProcessor(
 		return evaluateRows(settings, rows)
 	}
 
-	fun runAsync(uuids: List<UUID>) {
+	fun runSyncOne(jobPostingUuid: UUID, correlationId: UUID?): EvaluationStatus {
+		if (correlationId == null) {
+			return runSync(listOf(jobPostingUuid)).single().status
+		}
+		return try {
+			val settings = settingsHttpClient.loadForSync()
+			evaluateSingleWithOptionalSuccessFinish(jobPostingUuid, correlationId, settings)
+		} catch (e: Exception) {
+			publishFinishFailureBestEffort(correlationId, jobPostingUuid, e)
+			throw e
+		}
+	}
+
+	fun runAsync(uuids: List<UUID>, correlationId: UUID? = null) {
+		if (uuids.size == 1 && correlationId != null) {
+			val jobPostingUuid = uuids.single()
+			try {
+				val settings = settingsHttpClient.loadForAsync()
+				if (settings == null) {
+					log.warn("Async evaluation skipped: settings unavailable for {}", jobPostingUuid)
+					publishFinishFailureBestEffort(
+						correlationId,
+						jobPostingUuid,
+						IllegalStateException("Evaluation settings not available for async run"),
+					)
+					return
+				}
+				evaluateSingleWithOptionalSuccessFinish(jobPostingUuid, correlationId, settings)
+			} catch (e: Exception) {
+				publishFinishFailureBestEffort(correlationId, jobPostingUuid, e)
+				if (e is NoPostingsToEvaluateException) {
+					log.warn("Async evaluation: no evaluatable posting for {}", jobPostingUuid)
+				} else {
+					log.error("Async evaluation failed for {}", jobPostingUuid, e)
+				}
+			}
+			return
+		}
+
 		val settings = settingsHttpClient.loadForAsync() ?: return
 		val rows = postingEvaluationRepository.findEvaluatableByUuids(uuids)
 		if (rows.isEmpty()) {
@@ -51,6 +91,43 @@ class PostingEvaluationProcessor(
 		val results = evaluateRows(settings, rows)
 		for (item in results) {
 			log.info("Async batch: evaluated posting {} -> {}", item.uuid, item.status)
+		}
+	}
+
+	private fun evaluateSingleWithOptionalSuccessFinish(
+		jobPostingUuid: UUID,
+		correlationId: UUID,
+		settings: EvaluationSettings,
+	): EvaluationStatus {
+		val rows = postingEvaluationRepository.findEvaluatableByUuids(listOf(jobPostingUuid))
+		if (rows.isEmpty()) throw NoPostingsToEvaluateException()
+		val status = evaluateRows(settings, rows).single().status
+		try {
+			orchestrationFinishEventPublisher.publishSuccess(correlationId, jobPostingUuid, status)
+		} catch (e: Exception) {
+			log.error(
+				"Failed to notify orchestrator of successful evaluation for posting {}",
+				jobPostingUuid,
+				e,
+			)
+		}
+		return status
+	}
+
+	private fun publishFinishFailureBestEffort(
+		correlationId: UUID,
+		jobPostingUuid: UUID,
+		error: Throwable,
+	) {
+		val message = error.message?.takeIf { it.isNotBlank() } ?: error.toString()
+		try {
+			orchestrationFinishEventPublisher.publishFailure(correlationId, jobPostingUuid, message)
+		} catch (e: Exception) {
+			log.warn(
+				"Failed to send finish FAILED to orchestrator for posting {}",
+				jobPostingUuid,
+				e,
+			)
 		}
 	}
 

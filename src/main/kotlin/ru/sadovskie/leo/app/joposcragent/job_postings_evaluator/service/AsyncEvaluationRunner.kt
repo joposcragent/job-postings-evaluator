@@ -15,8 +15,8 @@ class AsyncEvaluationRunner(
 	}
 
 	@Async
-	fun runOne(jobPostingUuid: UUID) {
-		postingEvaluationProcessor.runAsync(listOf(jobPostingUuid))
+	fun runOne(jobPostingUuid: UUID, correlationId: UUID? = null) {
+		postingEvaluationProcessor.runAsync(listOf(jobPostingUuid), correlationId)
 	}
 
 	@Async
