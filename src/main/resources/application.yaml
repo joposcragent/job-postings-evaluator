@@ -1,18 +1,21 @@
 server:
   port: ${SERVER_PORT:8080}
+
 spring:
   application:
     name: job-postings-evaluator
-  flyway:
-    enabled: false
-  datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/joposcragent}
-    username: ${SPRING_DATASOURCE_USERNAME:postgres}
-    password: ${SPRING_DATASOURCE_PASSWORD:postgres}
+  cloud:
+    openfeign:
+      okhttp:
+        enabled: true
 
 joposcragent:
-  settings-manager-base-url: ${JOPOSCRAGENT_SETTINGS_MANAGER_BASE_URL:http://settings-manager:8080}
-  sentence-transformer-base-url: ${JOPOSCRAGENT_SENTENCE_TRANSFORMER_BASE_URL:http://sentence-transformer:8000/sentence-transformer}
+  job-postings-crud:
+    base-url: ${JOPOSCRAGENT_JOB_POSTINGS_CRUD_BASE_URL:http://job-postings-crud:8080}
+  settings-manager:
+    base-url: ${JOPOSCRAGENT_SETTINGS_MANAGER_BASE_URL:http://settings-manager:8080}
+  sentence-transformer:
+    base-url: ${JOPOSCRAGENT_SENTENCE_TRANSFORMER_BASE_URL:http://sentence-transformer:8000/sentence-transformer}
 
 celery:
   orchestrator:
@@ -22,32 +25,16 @@ celery:
 spring:
   config:
     activate:
-      on-profile: local,protozoa
-  datasource:
-    url: jdbc:postgresql://localhost:5432/joposcragent
-server:
-  port: 8089
-
-joposcragent:
-  settings-manager-base-url: http://localhost:8080
-  sentence-transformer-base-url: http://localhost:8000/sentence-transformer
-
----
-spring:
-  config:
-    activate:
       on-profile: local
-
+server:
+  port: 8082
+joposcragent:
+  job-postings-crud:
+    base-url: http://localhost:8081
+  settings-manager:
+    base-url: http://localhost:8080
+  sentence-transformer:
+    base-url: http://localhost:8000/sentence-transformer
 celery:
   orchestrator:
     base-url: http://localhost:8001
-
----
-spring:
-  config:
-    activate:
-      on-profile: protozoa
-
-celery:
-  orchestrator:
-    base-url: http://localhost:8090
