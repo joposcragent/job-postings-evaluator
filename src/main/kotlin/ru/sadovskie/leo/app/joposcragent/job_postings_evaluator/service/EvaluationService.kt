@@ -13,7 +13,6 @@ import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.ApiEvaluatio
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.FinishEventRequest
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsItem
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsItemPatch
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsList
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.ReferenceContext
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.RelevanceThresholdItem
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.SyncEvaluationResultItem
@@ -39,6 +38,7 @@ class EvaluationService(
 		if (body.list.isEmpty()) {
 			throw ResponseStatusException(HttpStatus.BAD_REQUEST)
 		}
+		log.info("evaluateSyncList start requestedUuids={}", body.list.size)
 		val fromCrud = feignListOrNotFound { jobPostingsCrud.findByUuids(UuidsListRequest(body.list)) }
 		val candidates = fromCrud.list
 			.filter { it.evaluationStatus != null && it.evaluationStatus in Eligible }
@@ -46,22 +46,38 @@ class EvaluationService(
 		if (candidates.isEmpty()) {
 			throw ResponseStatusException(HttpStatus.NOT_FOUND)
 		}
-		return candidates.map { p ->
+		val out = candidates.map { p ->
 			SyncEvaluationResultItem(p.uuid, evaluateAndPersist(p.uuid, null, null).status)
 		}
+		log.info("evaluateSyncList done evaluatedCount={}", out.size)
+		return out
 	}
 
-	fun evaluateSyncOne(jobPostingUuid: UUID, correlationId: UUID?): ApiEvaluationStatus = try {
-		val out = evaluateAndPersist(jobPostingUuid, correlationId, null)
-		out.status
-	} catch (e: Exception) {
-		if (correlationId != null) {
-			finishToOrchestrator(correlationId, jobPostingUuid, "FAILED", e)
+	fun evaluateSyncOne(jobPostingUuid: UUID, correlationId: UUID?): ApiEvaluationStatus {
+		log.info(
+			"evaluateSyncOne start jobPostingUuid={} correlationId={}",
+			jobPostingUuid,
+			correlationId?.toString() ?: "-",
+		)
+		return try {
+			val out = evaluateAndPersist(jobPostingUuid, correlationId, null)
+			log.info(
+				"evaluateSyncOne done jobPostingUuid={} correlationId={} status={}",
+				jobPostingUuid,
+				correlationId?.toString() ?: "-",
+				out.status,
+			)
+			out.status
+		} catch (e: Exception) {
+			if (correlationId != null) {
+				finishToOrchestrator(correlationId, jobPostingUuid, "FAILED", e)
+			}
+			throw e
 		}
-		throw e
 	}
 
 	fun runBatchIfPossible(batchSize: Int) {
+		log.info("runBatchIfPossible start batchSize={}", batchSize)
 		val (ctx, thr) = try {
 			loadSettingsOrThrow()
 		} catch (e: Exception) {
@@ -69,6 +85,7 @@ class EvaluationService(
 			return
 		}
 		if (batchSize < 1) {
+			log.info("runBatchIfPossible skip batchSize < 1")
 			return
 		}
 		val page = feignListOrNull {
@@ -81,12 +98,16 @@ class EvaluationService(
 				page = 1,
 				size = batchSize,
 			)
-		} ?: return
-
-		if (page.list.isEmpty()) {
-			log.warn("Пакетная оценка: вакансий в статусах NEW/PENDING не найдено")
+		} ?: run {
+			log.info("runBatchIfPossible done listCallFailedOrNull candidatesCount=0")
 			return
 		}
+
+		if (page.list.isEmpty()) {
+			log.info("runBatchIfPossible done no candidates in NEW/PENDING")
+			return
+		}
+		log.info("runBatchIfPossible candidatesCount={}", page.list.size)
 		for (p in page.list) {
 			try {
 				val o = evaluateAndPersist(p.uuid, null, PreloadedConfig(ctx, thr, p))
@@ -95,6 +116,7 @@ class EvaluationService(
 				log.error("Пакетная оценка: сбой для {}: {}", p.uuid, e.toString(), e)
 			}
 		}
+		log.info("runBatchIfPossible done processedCount={}", page.list.size)
 	}
 
 	/**
@@ -106,7 +128,19 @@ class EvaluationService(
 		correlationId: UUID?,
 		pre: PreloadedConfig?,
 	): Outcome {
-		val (ref, thr) = if (pre != null) (pre.context to pre.threshold) else loadSettingsOrThrow()
+		log.info(
+			"eval start jobPostingUuid={} correlationId={} batchPreloaded={}",
+			jobPostingUuid,
+			correlationId?.toString() ?: "-",
+			pre != null,
+		)
+		val (ref, thr) = if (pre != null) {
+			pre.context to pre.threshold
+		} else {
+			val r = logStep("settings.getReferenceContext", jobPostingUuid, correlationId) { fetchReferenceContext() }
+			val t = logStep("settings.getRelevanceThreshold", jobPostingUuid, correlationId) { fetchRelevanceThresholdContent() }
+			r to t
+		}
 		val item: JobPostingsItem
 		if (pre?.posting != null) {
 			if (pre.posting.evaluationStatus == null || pre.posting.evaluationStatus !in Eligible) {
@@ -117,27 +151,67 @@ class EvaluationService(
 			}
 			item = pre.posting
 		} else {
-			item = getPostingOrNotFound(jobPostingUuid)
+			item = logStep("job_postings_crud.get", jobPostingUuid, correlationId) { getPostingOrNotFound(jobPostingUuid) }
 		}
 		if (item.evaluationStatus == null || item.evaluationStatus !in Eligible) {
 			throw ResponseStatusException(HttpStatus.NOT_FOUND)
 		}
-		val (vector, sim) = computeVectorAndSimilarity(item, ref)
+		val (vector, sim) = computeVectorAndSimilarity(item, ref, jobPostingUuid, correlationId)
 		val t = thr.value
 		val relevant = if (t > 1) sim * 100.0 >= t else sim >= t
 		val st = if (relevant) ApiEvaluationStatus.RELEVANT else ApiEvaluationStatus.IRRELEVANT
-		patchOrThrow(
-			jobPostingUuid,
-			JobPostingsItemPatch(
-				contentVector = vector,
-				relevance = sim,
-				evaluationStatus = st,
-			),
-		)
+		logStep("job_postings_crud.patch", jobPostingUuid, correlationId) {
+			patchOrThrow(
+				jobPostingUuid,
+				JobPostingsItemPatch(
+					contentVector = vector,
+					relevance = sim,
+					evaluationStatus = st,
+				),
+			)
+		}
 		if (correlationId != null) {
 			finishToOrchestrator(correlationId, jobPostingUuid, "SUCCEEDED", null)
 		}
+		log.info(
+			"eval done jobPostingUuid={} correlationId={} status={}",
+			jobPostingUuid,
+			correlationId?.toString() ?: "-",
+			st,
+		)
 		return Outcome(st)
+	}
+
+	private fun <T> logStep(
+		step: String,
+		jobPostingUuid: UUID,
+		correlationId: UUID?,
+		block: () -> T,
+	): T {
+		val cid = correlationId?.toString() ?: "-"
+		val start = System.nanoTime()
+		return try {
+			val result = block()
+			val ms = (System.nanoTime() - start) / 1_000_000L
+			log.info(
+				"eval step={} jobPostingUuid={} correlationId={} durationMs={} outcome=success",
+				step,
+				jobPostingUuid,
+				cid,
+				ms,
+			)
+			result
+		} catch (e: Exception) {
+			val ms = (System.nanoTime() - start) / 1_000_000L
+			log.info(
+				"eval step={} jobPostingUuid={} correlationId={} durationMs={} outcome=error",
+				step,
+				jobPostingUuid,
+				cid,
+				ms,
+			)
+			throw e
+		}
 	}
 
 	private data class PreloadedConfig(
@@ -159,6 +233,12 @@ class EvaluationService(
 	}
 
 	private fun loadSettingsOrThrow(): Pair<ReferenceContext, RelevanceThresholdItem> {
+		val ref = fetchReferenceContext()
+		val thr = fetchRelevanceThresholdContent()
+		return ref to thr
+	}
+
+	private fun fetchReferenceContext(): ReferenceContext {
 		val ref = try {
 			settings.getReferenceContext()
 		} catch (e: FeignException) {
@@ -181,23 +261,30 @@ class EvaluationService(
 		if (ref.vector.isEmpty() || ref.context.isBlank()) {
 			throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Invalid reference context from settings")
 		}
-		val thr = try {
-			settings.getRelevanceThreshold("CONTENT")
-		} catch (e: FeignException) {
-			if (e.status() == 404) {
-				throw ResponseStatusException(
-					HttpStatus.INTERNAL_SERVER_ERROR,
-					"Relevance threshold CONTENT is not set",
-					e,
-				)
-			}
-			maybeRethrowDownstream5xx(e)
-			throw e
-		}
-		return ref to thr
+		return ref
 	}
 
-	private fun computeVectorAndSimilarity(item: JobPostingsItem, ref: ReferenceContext): Pair<List<Double>, Double> {
+	private fun fetchRelevanceThresholdContent(): RelevanceThresholdItem = try {
+		settings.getRelevanceThreshold("CONTENT")
+	} catch (e: FeignException) {
+		if (e.status() == 404) {
+			throw ResponseStatusException(
+				HttpStatus.INTERNAL_SERVER_ERROR,
+				"Relevance threshold CONTENT is not set",
+				e,
+			)
+		}
+		maybeRethrowDownstream5xx(e)
+		throw e
+	}
+
+	private fun computeVectorAndSimilarity(
+		item: JobPostingsItem,
+		ref: ReferenceContext,
+		jobPostingUuid: UUID,
+		correlationId: UUID?,
+	): Pair<List<Double>, Double> {
+		val cid = correlationId?.toString() ?: "-"
 		val v: List<Double>
 		if (item.contentVector.isNullOrEmpty()) {
 			if (item.content.isNullOrBlank()) {
@@ -206,23 +293,30 @@ class EvaluationService(
 					"Empty content; cannot build embedding for posting " + item.uuid,
 				)
 			}
-			v = try {
-				sentence.vectorize(TextCorpus(item.content))
-			} catch (e: FeignException) {
-				if (e.status() == 413) {
-					throw ResponseStatusException(
-						HttpStatus.INTERNAL_SERVER_ERROR,
-						"Content text too long for embedding",
-						e,
-					)
+			v = logStep("sentence_transformer.vectorize", jobPostingUuid, correlationId) {
+				try {
+					sentence.vectorize(TextCorpus(item.content))
+				} catch (e: FeignException) {
+					if (e.status() == 413) {
+						throw ResponseStatusException(
+							HttpStatus.INTERNAL_SERVER_ERROR,
+							"Content text too long for embedding",
+							e,
+						)
+					}
+					maybeRethrowDownstream5xx(e)
+					throw e
+				} catch (e: Exception) {
+					throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.message, e)
 				}
-				maybeRethrowDownstream5xx(e)
-				throw e
-			} catch (e: Exception) {
-				throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.message, e)
 			}
 		} else {
 			v = item.contentVector
+			log.info(
+				"eval step=sentence_transformer.embedding_reused jobPostingUuid={} correlationId={} durationMs=0 outcome=success",
+				jobPostingUuid,
+				cid,
+			)
 		}
 		if (v.size != ref.vector.size) {
 			throw ResponseStatusException(
@@ -230,14 +324,17 @@ class EvaluationService(
 				"Vector dimension mismatch between posting and reference",
 			)
 		}
-		return v to try {
-			sentence.cosineSimilarity(VectorsPair(left = v, right = ref.vector)).similarity
-		} catch (e: FeignException) {
-			maybeRethrowDownstream5xx(e)
-			throw e
-		} catch (e: Exception) {
-			throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.message, e)
+		val sim = logStep("sentence_transformer.cosineSimilarity", jobPostingUuid, correlationId) {
+			try {
+				sentence.cosineSimilarity(VectorsPair(left = v, right = ref.vector)).similarity
+			} catch (e: FeignException) {
+				maybeRethrowDownstream5xx(e)
+				throw e
+			} catch (e: Exception) {
+				throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.message, e)
+			}
 		}
+		return v to sim
 	}
 
 	private fun patchOrThrow(jobPostingUuid: UUID, p: JobPostingsItemPatch) = try {
@@ -290,18 +387,42 @@ class EvaluationService(
 		jobPostingUuid: UUID,
 		state: String,
 		exception: Throwable? = null,
-	) = try {
-		val logText = if (state == "FAILED" && exception != null) (exception.toString() + (exception.cause?.let { "\nCause: " + it } ?: "")) else null
-		orchestrator.finishEvent(
-			FinishEventRequest(
-				correlationId = correlationId,
-				status = state,
-				createdAt = Instant.now(),
-				jobPostingUuid = jobPostingUuid,
-				executionLog = logText,
-			),
-		)
-	} catch (e: Exception) {
-		log.error("Celery orchestrator finish: {}", e.toString(), e)
+	) {
+		val cid = correlationId.toString()
+		val start = System.nanoTime()
+		try {
+			val logText = if (state == "FAILED" && exception != null) {
+				(exception.toString() + (exception.cause?.let { "\nCause: " + it } ?: ""))
+			} else {
+				null
+			}
+			orchestrator.finishEvent(
+				FinishEventRequest(
+					correlationId = correlationId,
+					status = state,
+					createdAt = Instant.now(),
+					jobPostingUuid = jobPostingUuid,
+					executionLog = logText,
+				),
+			)
+			val ms = (System.nanoTime() - start) / 1_000_000L
+			log.info(
+				"eval step=celery_orchestrator.finishEvent jobPostingUuid={} correlationId={} durationMs={} outcome=success state={}",
+				jobPostingUuid,
+				cid,
+				ms,
+				state,
+			)
+		} catch (e: Exception) {
+			val ms = (System.nanoTime() - start) / 1_000_000L
+			log.info(
+				"eval step=celery_orchestrator.finishEvent jobPostingUuid={} correlationId={} durationMs={} outcome=error state={}",
+				jobPostingUuid,
+				cid,
+				ms,
+				state,
+			)
+			log.error("Celery orchestrator finish: {}", e.toString(), e)
+		}
 	}
 }

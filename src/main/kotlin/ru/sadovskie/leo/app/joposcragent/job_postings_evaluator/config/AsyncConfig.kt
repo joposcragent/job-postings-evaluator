@@ -1,5 +1,6 @@
 package ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.config
 
+import org.slf4j.MDC
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.task.TaskExecutor
@@ -19,6 +20,21 @@ class AsyncConfig {
 		ex.setQueueCapacity(200)
 		ex.setWaitForTasksToCompleteOnShutdown(true)
 		ex.setAwaitTerminationSeconds(30)
+		ex.setTaskDecorator { runnable ->
+			val contextMap = MDC.getCopyOfContextMap()
+			Runnable {
+				try {
+					if (contextMap != null) {
+						MDC.setContextMap(contextMap)
+					} else {
+						MDC.clear()
+					}
+					runnable.run()
+				} finally {
+					MDC.clear()
+				}
+			}
+		}
 		ex.initialize()
 		return ex
 	}

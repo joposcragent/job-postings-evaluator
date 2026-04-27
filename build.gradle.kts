@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "ru.sadovskie.leo.app.joposcragent"
-version = "2.0.0"
+version = "2.1.0"
 
 java {
 	toolchain {
@@ -26,6 +26,7 @@ dependencyManagement {
 }
 
 dependencies {
+	implementation("net.logstash.logback:logstash-logback-encoder:8.1")
 	implementation("org.springframework.boot:spring-boot-starter-actuator")
 	implementation("org.springframework.boot:spring-boot-starter-webmvc")
 	implementation("org.springframework.boot:spring-boot-starter-validation")
