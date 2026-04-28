@@ -49,6 +49,7 @@ data class JobPostingsItem(
 	val evaluationStatus: ApiEvaluationStatus? = null,
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class JobPostingsList(
 	val list: List<JobPostingsItem> = emptyList(),
 )
