@@ -3,12 +3,14 @@ package ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.service
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertDoesNotThrow
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
+import org.mockito.Mockito.lenient
 import org.mockito.kotlin.any
 import org.mockito.kotlin.check
 import org.mockito.kotlin.eq
@@ -31,6 +33,7 @@ import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsI
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsList
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.ReferenceContext
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.RelevanceThresholdItem
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.RelevanceThresholdsList
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.TextCorpus
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.UuidsListRequest
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.support.FeignTestSupport
@@ -52,6 +55,11 @@ class EvaluationServiceTest {
 	private lateinit var orchestrator: CeleryOrchestratorClient
 
 	private fun s() = EvaluationService(crud, settings, sentence, orchestrator)
+
+	@BeforeEach
+	fun stubRelevanceThresholdList() {
+		lenient().`when`(settings.getRelevanceThresholdsList()).thenReturn(RelevanceThresholdsList(emptyList()))
+	}
 
 	private val u1 = UUID.fromString("b0000000-0000-0000-0000-000000000001")
 	private val vec3 = listOf(1.0, 0.0, 0.0)
@@ -80,7 +88,7 @@ class EvaluationServiceTest {
 	fun `full evaluation with stored vector marks relevant`() {
 		val vec = listOf(1.0, 0.0, 0.0)
 		val ref = ReferenceContext("ctx", listOf(1.0, 0.0, 0.0))
-		val thr = RelevanceThresholdItem(50.0)
+		val thr = RelevanceThresholdItem(0.5)
 		whenever(settings.getReferenceContext()).thenReturn(ref)
 		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(thr)
 		whenever(crud.findByUuids(any()))

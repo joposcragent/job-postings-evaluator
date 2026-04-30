@@ -46,6 +46,7 @@ class EvaluationService(
 		if (candidates.isEmpty()) {
 			throw ResponseStatusException(HttpStatus.NOT_FOUND)
 		}
+		warnIfAnyRelevanceThresholdOutOfRange()
 		val out = candidates.map { p ->
 			SyncEvaluationResultItem(p.uuid, evaluateAndPersist(p.uuid, null, null).status)
 		}
@@ -60,6 +61,7 @@ class EvaluationService(
 			correlationId?.toString() ?: "-",
 		)
 		return try {
+			warnIfAnyRelevanceThresholdOutOfRange()
 			val out = evaluateAndPersist(jobPostingUuid, correlationId, null)
 			log.info(
 				"evaluateSyncOne done jobPostingUuid={} correlationId={} status={}",
@@ -157,8 +159,7 @@ class EvaluationService(
 			throw ResponseStatusException(HttpStatus.NOT_FOUND)
 		}
 		val (vector, sim) = computeVectorAndSimilarity(item, ref, jobPostingUuid, correlationId)
-		val t = thr.value
-		val relevant = if (t > 1) sim * 100.0 >= t else sim >= t
+		val relevant = sim >= thr.value
 		val st = if (relevant) ApiEvaluationStatus.RELEVANT else ApiEvaluationStatus.IRRELEVANT
 		logStep("job_postings_crud.patch", jobPostingUuid, correlationId) {
 			patchOrThrow(
@@ -235,7 +236,27 @@ class EvaluationService(
 	private fun loadSettingsOrThrow(): Pair<ReferenceContext, RelevanceThresholdItem> {
 		val ref = fetchReferenceContext()
 		val thr = fetchRelevanceThresholdContent()
+		warnIfAnyRelevanceThresholdOutOfRange()
 		return ref to thr
+	}
+
+	private fun warnIfAnyRelevanceThresholdOutOfRange() {
+		runCatching {
+			settings.getRelevanceThresholdsList().list
+		}.onSuccess { items ->
+			for (item in items) {
+				val v = item.value
+				if (!v.isFinite() || v !in 0.0..1.0) {
+					log.warn(
+						"relevance threshold value outside expected range [0,1]: type={} value={}",
+						item.type ?: "?",
+						v,
+					)
+				}
+			}
+		}.onFailure { e ->
+			log.debug("failed to load relevance thresholds list for range check: {}", e.toString())
+		}
 	}
 
 	private fun fetchReferenceContext(): ReferenceContext {

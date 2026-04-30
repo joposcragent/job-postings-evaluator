@@ -69,8 +69,15 @@ data class ReferenceContext(
 	val vector: List<Double>,
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class RelevanceThresholdItem(
 	val value: Double,
+	val type: String? = null,
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RelevanceThresholdsList(
+	val list: List<RelevanceThresholdItem> = emptyList(),
 )
 
 // --- sentence-transformer ---

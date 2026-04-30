@@ -6,6 +6,7 @@ import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.ReferenceContext
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.RelevanceThresholdItem
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.RelevanceThresholdsList
 
 @FeignClient(
 	name = "settingsManager",
@@ -19,6 +20,12 @@ interface SettingsManagerClient {
 		produces = [MediaType.APPLICATION_JSON_VALUE],
 	)
 	fun getReferenceContext(): ReferenceContext
+
+	@GetMapping(
+		"/relevance-thresholds/list",
+		produces = [MediaType.APPLICATION_JSON_VALUE],
+	)
+	fun getRelevanceThresholdsList(): RelevanceThresholdsList
 
 	@GetMapping(
 		"/relevance-thresholds/{type}",
