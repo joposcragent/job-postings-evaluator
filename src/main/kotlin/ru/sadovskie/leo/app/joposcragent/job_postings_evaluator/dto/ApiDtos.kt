@@ -43,6 +43,7 @@ enum class ApiEvaluationStatus {
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class JobPostingsItem(
 	val uuid: UUID,
+	val searchQueryUuid: UUID,
 	@JsonProperty("contentVector")
 	val contentVector: List<Double>? = null,
 	val content: String? = null,
@@ -70,14 +71,9 @@ data class ReferenceContext(
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-data class RelevanceThresholdItem(
-	val value: Double,
-	val type: String? = null,
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class RelevanceThresholdsList(
-	val list: List<RelevanceThresholdItem> = emptyList(),
+data class SearchQueryItemResponse(
+	val contentRelevance: Double,
+	val notificationRelevance: Double? = null,
 )
 
 // --- sentence-transformer ---

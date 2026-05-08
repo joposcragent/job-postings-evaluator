@@ -32,8 +32,7 @@ import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsI
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsItemPatch
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsList
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.ReferenceContext
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.RelevanceThresholdItem
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.RelevanceThresholdsList
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.SearchQueryItemResponse
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.TextCorpus
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.UuidsListRequest
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.support.FeignTestSupport
@@ -57,11 +56,12 @@ class EvaluationServiceTest {
 	private fun s() = EvaluationService(crud, settings, sentence, orchestrator)
 
 	@BeforeEach
-	fun stubRelevanceThresholdList() {
-		lenient().`when`(settings.getRelevanceThresholdsList()).thenReturn(RelevanceThresholdsList(emptyList()))
+	fun stubSearchQueryDefault() {
+		lenient().`when`(settings.getSearchQuery(any())).thenReturn(SearchQueryItemResponse(contentRelevance = 0.0))
 	}
 
 	private val u1 = UUID.fromString("b0000000-0000-0000-0000-000000000001")
+	private val sq1 = UUID.fromString("d0000000-0000-0000-0000-000000000001")
 	private val vec3 = listOf(1.0, 0.0, 0.0)
 	private val ref3 = ReferenceContext("ctx", vec3)
 
@@ -79,7 +79,7 @@ class EvaluationServiceTest {
 	@Test
 	fun `sync list 404 when no eligible after filter`() {
 		whenever(crud.findByUuids(any<UuidsListRequest>())).thenReturn(
-			JobPostingsList(listOf(JobPostingsItem(u1, vec3, "x", ApiEvaluationStatus.RELEVANT))),
+			JobPostingsList(listOf(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.RELEVANT))),
 		)
 		assertEquals(404, assertThrows<ResponseStatusException> { s().evaluateSyncList(UuidsListRequest(listOf(u1))) }.statusCode.value())
 	}
@@ -88,13 +88,12 @@ class EvaluationServiceTest {
 	fun `full evaluation with stored vector marks relevant`() {
 		val vec = listOf(1.0, 0.0, 0.0)
 		val ref = ReferenceContext("ctx", listOf(1.0, 0.0, 0.0))
-		val thr = RelevanceThresholdItem(0.5)
 		whenever(settings.getReferenceContext()).thenReturn(ref)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(thr)
+		whenever(settings.getSearchQuery(eq(sq1))).thenReturn(SearchQueryItemResponse(contentRelevance = 0.5))
 		whenever(crud.findByUuids(any()))
-			.thenReturn(JobPostingsList(listOf(JobPostingsItem(u1, vec, "x", ApiEvaluationStatus.NEW))))
+			.thenReturn(JobPostingsList(listOf(JobPostingsItem(u1, sq1, vec, "x", ApiEvaluationStatus.NEW))))
 		whenever(crud.getByUuid(u1)).thenReturn(
-			JobPostingsItem(u1, vec, "x", ApiEvaluationStatus.NEW),
+			JobPostingsItem(u1, sq1, vec, "x", ApiEvaluationStatus.NEW),
 		)
 		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(0.99))
 
@@ -115,13 +114,12 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `stored vector marks irrelevant by threshold`() {
-		val thr = RelevanceThresholdItem(0.5)
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(thr)
+		whenever(settings.getSearchQuery(eq(sq1))).thenReturn(SearchQueryItemResponse(contentRelevance = 0.5))
 		whenever(crud.findByUuids(any())).thenReturn(
-			JobPostingsList(listOf(JobPostingsItem(u1, vec3, "x", ApiEvaluationStatus.PENDING))),
+			JobPostingsList(listOf(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.PENDING))),
 		)
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, vec3, "x", ApiEvaluationStatus.PENDING))
+		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.PENDING))
 		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(0.1))
 
 		val out = s().evaluateSyncList(UuidsListRequest(listOf(u1)))
@@ -130,13 +128,11 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `vectorize when no stored vector`() {
-		val thr = RelevanceThresholdItem(0.0)
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(thr)
 		whenever(crud.findByUuids(any())).thenReturn(
-			JobPostingsList(listOf(JobPostingsItem(u1, null, "hello", ApiEvaluationStatus.NEW))),
+			JobPostingsList(listOf(JobPostingsItem(u1, sq1, null, "hello", ApiEvaluationStatus.NEW))),
 		)
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, null, "hello", ApiEvaluationStatus.NEW))
+		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, null, "hello", ApiEvaluationStatus.NEW))
 		whenever(sentence.vectorize(any<TextCorpus>())).thenReturn(vec3)
 		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(0.2))
 
@@ -148,9 +144,8 @@ class EvaluationServiceTest {
 	@Test
 	fun `get by uuid 404`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
 		whenever(crud.findByUuids(any())).thenReturn(
-			JobPostingsList(listOf(JobPostingsItem(u1, vec3, "x", ApiEvaluationStatus.NEW))),
+			JobPostingsList(listOf(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.NEW))),
 		)
 		whenever(crud.getByUuid(u1)).then { throw FeignTestSupport.feignError(404) }
 		assertEquals(404, assertThrows<ResponseStatusException> { s().evaluateSyncList(UuidsListRequest(listOf(u1))) }.statusCode.value())
@@ -160,8 +155,7 @@ class EvaluationServiceTest {
 	fun `sync one with correlation succeeds and finish`() {
 		val cid = UUID.fromString("c0000000-0000-0000-0000-000000000001")
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, vec3, "x", ApiEvaluationStatus.NEW))
+		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.NEW))
 		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(1.0))
 		assertEquals(ApiEvaluationStatus.RELEVANT, s().evaluateSyncOne(u1, cid))
 		verify(orchestrator).finishEvent(
@@ -176,7 +170,6 @@ class EvaluationServiceTest {
 	fun `sync one with correlation and failure finish failed`() {
 		val cid = UUID.fromString("c0000000-0000-0000-0000-000000000002")
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
 		whenever(crud.getByUuid(u1)).then { throw FeignTestSupport.feignError(404) }
 		assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, cid) }
 		verify(orchestrator).finishEvent(
@@ -191,8 +184,7 @@ class EvaluationServiceTest {
 	fun `orchestrator finish error is swallowed`() {
 		val cid = UUID.fromString("c0000000-0000-0000-0000-000000000003")
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, vec3, "x", ApiEvaluationStatus.NEW))
+		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.NEW))
 		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(1.0))
 		whenever(orchestrator.finishEvent(any())).thenThrow(RuntimeException("x"))
 		assertEquals(ApiEvaluationStatus.RELEVANT, s().evaluateSyncOne(u1, cid))
@@ -211,17 +203,17 @@ class EvaluationServiceTest {
 	}
 
 	@Test
-	fun `relevance threshold 404`() {
+	fun `search query 404`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).then { throw FeignTestSupport.feignError(404) }
+		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.NEW))
+		whenever(settings.getSearchQuery(any())).then { throw FeignTestSupport.feignError(404) }
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `vectorize 413`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, null, "long", ApiEvaluationStatus.NEW))
+		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, null, "long", ApiEvaluationStatus.NEW))
 		whenever(sentence.vectorize(any<TextCorpus>())).then { throw FeignTestSupport.feignError(413) }
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
@@ -229,24 +221,21 @@ class EvaluationServiceTest {
 	@Test
 	fun `vector dimension mismatch`() {
 		whenever(settings.getReferenceContext()).thenReturn(ReferenceContext("c", listOf(1.0, 0.0)))
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, listOf(1.0, 0.0, 0.0), "x", ApiEvaluationStatus.NEW))
+		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, listOf(1.0, 0.0, 0.0), "x", ApiEvaluationStatus.NEW))
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `empty content cannot build embedding`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, null, "   ", ApiEvaluationStatus.NEW))
+		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, null, "   ", ApiEvaluationStatus.NEW))
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `patch 404`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, vec3, "x", ApiEvaluationStatus.NEW))
+		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.NEW))
 		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(1.0))
 		whenever(crud.patch(eq(u1), any())).then { throw FeignTestSupport.feignError(404) }
 		assertEquals(404, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
@@ -255,7 +244,6 @@ class EvaluationServiceTest {
 	@Test
 	fun `downstream 5xx rethrow`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
 		whenever(crud.getByUuid(u1)).then { throw FeignTestSupport.feignError(502, "err") }
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
@@ -269,8 +257,6 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `runBatch no op when batch size under 1`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
 		s().runBatchIfPossible(0)
 		verifyNoInteractions(crud)
 	}
@@ -278,7 +264,6 @@ class EvaluationServiceTest {
 	@Test
 	fun `runBatch when list 404`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
 		whenever(crud.list(any(), any(), any(), any(), any(), any(), any())).then { throw FeignTestSupport.feignError(404) }
 		assertDoesNotThrow { s().runBatchIfPossible(5) }
 	}
@@ -286,7 +271,6 @@ class EvaluationServiceTest {
 	@Test
 	fun `runBatch when list is empty`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
 		whenever(
 			crud.list(
 				isNull<UUID>(),
@@ -304,8 +288,7 @@ class EvaluationServiceTest {
 	@Test
 	fun `runBatch processes items`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
-		val item = JobPostingsItem(u1, vec3, "c", ApiEvaluationStatus.NEW)
+		val item = JobPostingsItem(u1, sq1, vec3, "c", ApiEvaluationStatus.NEW)
 		whenever(
 			crud.list(
 				isNull<UUID>(),
@@ -338,7 +321,6 @@ class EvaluationServiceTest {
 	@Test
 	fun `runBatch list 502 is ignored`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
 		whenever(
 			crud.list(
 				isNull<UUID>(),
@@ -356,7 +338,6 @@ class EvaluationServiceTest {
 	@Test
 	fun `runBatch list non feign`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getRelevanceThreshold("CONTENT")).thenReturn(RelevanceThresholdItem(0.0))
 		whenever(
 			crud.list(
 				isNull<UUID>(),

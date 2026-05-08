@@ -14,7 +14,6 @@ import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.FinishEventR
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsItem
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsItemPatch
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.ReferenceContext
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.RelevanceThresholdItem
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.SyncEvaluationResultItem
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.TextCorpus
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.UuidsListRequest
@@ -46,7 +45,6 @@ class EvaluationService(
 		if (candidates.isEmpty()) {
 			throw ResponseStatusException(HttpStatus.NOT_FOUND)
 		}
-		warnIfAnyRelevanceThresholdOutOfRange()
 		val out = candidates.map { p ->
 			SyncEvaluationResultItem(p.uuid, evaluateAndPersist(p.uuid, null, null).status)
 		}
@@ -61,7 +59,6 @@ class EvaluationService(
 			correlationId?.toString() ?: "-",
 		)
 		return try {
-			warnIfAnyRelevanceThresholdOutOfRange()
 			val out = evaluateAndPersist(jobPostingUuid, correlationId, null)
 			log.info(
 				"evaluateSyncOne done jobPostingUuid={} correlationId={} status={}",
@@ -80,14 +77,14 @@ class EvaluationService(
 
 	fun runBatchIfPossible(batchSize: Int) {
 		log.info("runBatchIfPossible start batchSize={}", batchSize)
-		val (ctx, thr) = try {
-			loadSettingsOrThrow()
-		} catch (e: Exception) {
-			log.warn("Пакетная оценка: невозможно загрузить настройки: {}", e.toString(), e)
-			return
-		}
 		if (batchSize < 1) {
 			log.info("runBatchIfPossible skip batchSize < 1")
+			return
+		}
+		val ctx = try {
+			fetchReferenceContext()
+		} catch (e: Exception) {
+			log.warn("Пакетная оценка: невозможно загрузить настройки: {}", e.toString(), e)
 			return
 		}
 		val page = feignListOrNull {
@@ -112,7 +109,7 @@ class EvaluationService(
 		log.info("runBatchIfPossible candidatesCount={}", page.list.size)
 		for (p in page.list) {
 			try {
-				val o = evaluateAndPersist(p.uuid, null, PreloadedConfig(ctx, thr, p))
+				val o = evaluateAndPersist(p.uuid, null, PreloadedConfig(ctx, p))
 				log.info("Пакетная оценка: uuid={} -> {}", p.uuid, o.status)
 			} catch (e: Exception) {
 				log.error("Пакетная оценка: сбой для {}: {}", p.uuid, e.toString(), e)
@@ -122,7 +119,7 @@ class EvaluationService(
 	}
 
 	/**
-	 * @param pre if non-null, reuse settings and posting to avoid refetching (batch).
+	 * @param pre if non-null, reuse reference context and posting from list (batch).
 	 * @return outcome with status; for sync single with [correlationId] sends SUCCEEDED to orchestrator on success.
 	 */
 	private fun evaluateAndPersist(
@@ -136,30 +133,30 @@ class EvaluationService(
 			correlationId?.toString() ?: "-",
 			pre != null,
 		)
-		val (ref, thr) = if (pre != null) {
-			pre.context to pre.threshold
+		val ref = if (pre != null) {
+			pre.context
 		} else {
-			val r = logStep("settings.getReferenceContext", jobPostingUuid, correlationId) { fetchReferenceContext() }
-			val t = logStep("settings.getRelevanceThreshold", jobPostingUuid, correlationId) { fetchRelevanceThresholdContent() }
-			r to t
+			logStep("settings.getReferenceContext", jobPostingUuid, correlationId) { fetchReferenceContext() }
 		}
-		val item: JobPostingsItem
-		if (pre?.posting != null) {
+		val item: JobPostingsItem = if (pre?.posting != null) {
 			if (pre.posting.evaluationStatus == null || pre.posting.evaluationStatus !in Eligible) {
 				throw ResponseStatusException(HttpStatus.NOT_FOUND)
 			}
 			if (pre.posting.uuid != jobPostingUuid) {
 				throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR)
 			}
-			item = pre.posting
+			pre.posting
 		} else {
-			item = logStep("job_postings_crud.get", jobPostingUuid, correlationId) { getPostingOrNotFound(jobPostingUuid) }
+			logStep("job_postings_crud.get", jobPostingUuid, correlationId) { getPostingOrNotFound(jobPostingUuid) }
 		}
 		if (item.evaluationStatus == null || item.evaluationStatus !in Eligible) {
 			throw ResponseStatusException(HttpStatus.NOT_FOUND)
 		}
+		val contentThreshold = logStep("settings.getSearchQuery", jobPostingUuid, correlationId) {
+			fetchContentRelevanceThreshold(item.searchQueryUuid)
+		}
 		val (vector, sim) = computeVectorAndSimilarity(item, ref, jobPostingUuid, correlationId)
-		val relevant = sim >= thr.value
+		val relevant = sim >= contentThreshold
 		val st = if (relevant) ApiEvaluationStatus.RELEVANT else ApiEvaluationStatus.IRRELEVANT
 		logStep("job_postings_crud.patch", jobPostingUuid, correlationId) {
 			patchOrThrow(
@@ -217,8 +214,7 @@ class EvaluationService(
 
 	private data class PreloadedConfig(
 		val context: ReferenceContext,
-		val threshold: RelevanceThresholdItem,
-		val posting: JobPostingsItem? = null,
+		val posting: JobPostingsItem,
 	)
 
 	private data class Outcome(val status: ApiEvaluationStatus)
@@ -231,32 +227,6 @@ class EvaluationService(
 		}
 		maybeRethrowDownstream5xx(e)
 		throw e
-	}
-
-	private fun loadSettingsOrThrow(): Pair<ReferenceContext, RelevanceThresholdItem> {
-		val ref = fetchReferenceContext()
-		val thr = fetchRelevanceThresholdContent()
-		warnIfAnyRelevanceThresholdOutOfRange()
-		return ref to thr
-	}
-
-	private fun warnIfAnyRelevanceThresholdOutOfRange() {
-		runCatching {
-			settings.getRelevanceThresholdsList().list
-		}.onSuccess { items ->
-			for (item in items) {
-				val v = item.value
-				if (!v.isFinite() || v !in 0.0..1.0) {
-					log.warn(
-						"relevance threshold value outside expected range [0,1]: type={} value={}",
-						item.type ?: "?",
-						v,
-					)
-				}
-			}
-		}.onFailure { e ->
-			log.debug("failed to load relevance thresholds list for range check: {}", e.toString())
-		}
 	}
 
 	private fun fetchReferenceContext(): ReferenceContext {
@@ -285,18 +255,34 @@ class EvaluationService(
 		return ref
 	}
 
-	private fun fetchRelevanceThresholdContent(): RelevanceThresholdItem = try {
-		settings.getRelevanceThreshold("CONTENT")
-	} catch (e: FeignException) {
-		if (e.status() == 404) {
+	private fun fetchContentRelevanceThreshold(searchQueryUuid: UUID): Double {
+		val sq = try {
+			settings.getSearchQuery(searchQueryUuid)
+		} catch (e: FeignException) {
+			if (e.status() == 404) {
+				throw ResponseStatusException(
+					HttpStatus.INTERNAL_SERVER_ERROR,
+					"Search query is not available for uuid $searchQueryUuid",
+					e,
+				)
+			}
+			maybeRethrowDownstream5xx(e)
+			throw e
+		} catch (e: Exception) {
 			throw ResponseStatusException(
 				HttpStatus.INTERNAL_SERVER_ERROR,
-				"Relevance threshold CONTENT is not set",
+				"Search query is not available: " + (e.message ?: e.toString()),
 				e,
 			)
 		}
-		maybeRethrowDownstream5xx(e)
-		throw e
+		val v = sq.contentRelevance
+		if (!v.isFinite() || v !in 0.0..1.0) {
+			throw ResponseStatusException(
+				HttpStatus.INTERNAL_SERVER_ERROR,
+				"Invalid content relevance from settings for uuid $searchQueryUuid",
+			)
+		}
+		return v
 	}
 
 	private fun computeVectorAndSimilarity(

@@ -5,8 +5,8 @@ import org.springframework.http.MediaType
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.ReferenceContext
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.RelevanceThresholdItem
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.RelevanceThresholdsList
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.SearchQueryItemResponse
+import java.util.UUID
 
 @FeignClient(
 	name = "settingsManager",
@@ -22,16 +22,8 @@ interface SettingsManagerClient {
 	fun getReferenceContext(): ReferenceContext
 
 	@GetMapping(
-		"/relevance-thresholds/list",
+		"/search-query/{entityUuid}",
 		produces = [MediaType.APPLICATION_JSON_VALUE],
 	)
-	fun getRelevanceThresholdsList(): RelevanceThresholdsList
-
-	@GetMapping(
-		"/relevance-thresholds/{type}",
-		produces = [MediaType.APPLICATION_JSON_VALUE],
-	)
-	fun getRelevanceThreshold(
-		@PathVariable("type") type: String = "CONTENT",
-	): RelevanceThresholdItem
+	fun getSearchQuery(@PathVariable("entityUuid") entityUuid: UUID): SearchQueryItemResponse
 }
