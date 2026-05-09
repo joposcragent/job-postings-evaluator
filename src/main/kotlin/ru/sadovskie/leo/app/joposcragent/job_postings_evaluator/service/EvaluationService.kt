@@ -46,7 +46,7 @@ class EvaluationService(
 			throw ResponseStatusException(HttpStatus.NOT_FOUND)
 		}
 		val out = candidates.map { p ->
-			SyncEvaluationResultItem(p.uuid, evaluateAndPersist(p.uuid, null, null).status)
+			SyncEvaluationResultItem(p.uuid, evaluateAndPersist(p.uuid, null, null, forceReevaluate = false).status)
 		}
 		log.info("evaluateSyncList done evaluatedCount={}", out.size)
 		return out
@@ -59,7 +59,7 @@ class EvaluationService(
 			correlationId?.toString() ?: "-",
 		)
 		return try {
-			val out = evaluateAndPersist(jobPostingUuid, correlationId, null)
+			val out = evaluateAndPersist(jobPostingUuid, correlationId, null, forceReevaluate = true)
 			log.info(
 				"evaluateSyncOne done jobPostingUuid={} correlationId={} status={}",
 				jobPostingUuid,
@@ -109,7 +109,7 @@ class EvaluationService(
 		log.info("runBatchIfPossible candidatesCount={}", page.list.size)
 		for (p in page.list) {
 			try {
-				val o = evaluateAndPersist(p.uuid, null, PreloadedConfig(ctx, p))
+				val o = evaluateAndPersist(p.uuid, null, PreloadedConfig(ctx, p), forceReevaluate = false)
 				log.info("Пакетная оценка: uuid={} -> {}", p.uuid, o.status)
 			} catch (e: Exception) {
 				log.error("Пакетная оценка: сбой для {}: {}", p.uuid, e.toString(), e)
@@ -120,12 +120,14 @@ class EvaluationService(
 
 	/**
 	 * @param pre if non-null, reuse reference context and posting from list (batch).
+	 * @param forceReevaluate if true (одиночный `evaluateSyncOne`), статус оценки не ограничивается NEW/PENDING — допускается переоценка RELEVANT/IRRELEVANT и т.д.
 	 * @return outcome with status; for sync single with [correlationId] sends SUCCEEDED to orchestrator on success.
 	 */
 	private fun evaluateAndPersist(
 		jobPostingUuid: UUID,
 		correlationId: UUID?,
 		pre: PreloadedConfig?,
+		forceReevaluate: Boolean = false,
 	): Outcome {
 		log.info(
 			"eval start jobPostingUuid={} correlationId={} batchPreloaded={}",
@@ -139,7 +141,7 @@ class EvaluationService(
 			logStep("settings.getReferenceContext", jobPostingUuid, correlationId) { fetchReferenceContext() }
 		}
 		val item: JobPostingsItem = if (pre?.posting != null) {
-			if (pre.posting.evaluationStatus == null || pre.posting.evaluationStatus !in Eligible) {
+			if (!forceReevaluate && (pre.posting.evaluationStatus == null || pre.posting.evaluationStatus !in Eligible)) {
 				throw ResponseStatusException(HttpStatus.NOT_FOUND)
 			}
 			if (pre.posting.uuid != jobPostingUuid) {
@@ -149,7 +151,7 @@ class EvaluationService(
 		} else {
 			logStep("job_postings_crud.get", jobPostingUuid, correlationId) { getPostingOrNotFound(jobPostingUuid) }
 		}
-		if (item.evaluationStatus == null || item.evaluationStatus !in Eligible) {
+		if (!forceReevaluate && (item.evaluationStatus == null || item.evaluationStatus !in Eligible)) {
 			throw ResponseStatusException(HttpStatus.NOT_FOUND)
 		}
 		val contentThreshold = logStep("settings.getSearchQuery", jobPostingUuid, correlationId) {

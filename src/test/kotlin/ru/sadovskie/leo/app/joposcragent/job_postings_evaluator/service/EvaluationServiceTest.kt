@@ -233,6 +233,15 @@ class EvaluationServiceTest {
 	}
 
 	@Test
+	fun `sync one re-evaluates RELEVANT posting`() {
+		whenever(settings.getReferenceContext()).thenReturn(ref3)
+		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "content", ApiEvaluationStatus.RELEVANT))
+		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(0.95))
+		assertEquals(ApiEvaluationStatus.RELEVANT, s().evaluateSyncOne(u1, null))
+		verify(crud).patch(eq(u1), any())
+	}
+
+	@Test
 	fun `patch 404`() {
 		whenever(settings.getReferenceContext()).thenReturn(ref3)
 		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.NEW))
