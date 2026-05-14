@@ -8,18 +8,32 @@ spring:
     openfeign:
       okhttp:
         enabled: true
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/joposcragent}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:job-postings-evaluator}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
 
 joposcragent:
-  job-postings-crud:
-    base-url: ${JOPOSCRAGENT_JOB_POSTINGS_CRUD_BASE_URL:http://job-postings-crud:8080}
   settings-manager:
     base-url: ${JOPOSCRAGENT_SETTINGS_MANAGER_BASE_URL:http://settings-manager:8080}
   sentence-transformer:
     base-url: ${JOPOSCRAGENT_SENTENCE_TRANSFORMER_BASE_URL:http://sentence-transformer:8000/sentence-transformer}
 
-celery:
-  orchestrator:
-    base-url: ${CELERY_ORCHESTRATOR_BASE_URL:http://celery-orchestrator-api:8000}
+app:
+  kafka:
+    consumer-enabled: ${APP_KAFKA_CONSUMER_ENABLED:true}
+    evaluate-consumer-group: ${APP_KAFKA_EVALUATE_CONSUMER_GROUP:job-postings-evaluator-evaluate}
 
 ---
 spring:
@@ -29,12 +43,7 @@ spring:
 server:
   port: 8082
 joposcragent:
-  job-postings-crud:
-    base-url: http://localhost:8081
   settings-manager:
     base-url: http://localhost:8080
   sentence-transformer:
     base-url: http://localhost:8000/sentence-transformer
-celery:
-  orchestrator:
-    base-url: http://localhost:8001

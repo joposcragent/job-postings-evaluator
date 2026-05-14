@@ -1,19 +1,22 @@
 package ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.web
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
 import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
-import org.mockito.kotlin.any
 import org.mockito.kotlin.eq
-import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
+import org.mockito.kotlin.whenever
+import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
+import org.springframework.web.server.ResponseStatusException
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.UuidsList
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.exception.GlobalExceptionHandler
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.service.AsyncEvaluationRunner
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.service.EvaluationService
@@ -40,12 +43,16 @@ class EvaluateControllerTest {
 
 	@Test
 	fun `sync list rejects empty list`() {
-		mvc.perform(
+		whenever(evaluation.evaluateSyncList(UuidsList(emptyList()))).thenThrow(
+			ResponseStatusException(HttpStatus.BAD_REQUEST),
+		)
+		val result = mvc.perform(
 			post("/evaluate/sync/list")
 				.contentType(MediaType.APPLICATION_JSON)
 				.content("{\"list\":[]}"),
-		).andExpect(status().isBadRequest)
-		verify(evaluation, never()).evaluateSyncList(any())
+		).andReturn()
+		assertEquals(400, result.response.status, result.response.contentAsString)
+		verify(evaluation).evaluateSyncList(UuidsList(emptyList()))
 	}
 
 	@Test

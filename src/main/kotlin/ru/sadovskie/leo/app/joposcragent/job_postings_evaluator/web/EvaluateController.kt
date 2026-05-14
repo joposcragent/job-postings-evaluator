@@ -10,9 +10,10 @@ import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 import jakarta.validation.Valid
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.BatchAsyncProcessingRequest
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.SyncEvaluationResultItem
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.UuidsListRequest
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.BatchAsyncProcessingParameters
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.EvaluateSyncJobPostingUuidPost200Response
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.SyncEvaluationResultItem
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.UuidsList
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.service.AsyncEvaluationRunner
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.service.EvaluationService
 import java.util.UUID
@@ -28,7 +29,7 @@ class EvaluateController(
 	private val log = LoggerFactory.getLogger(javaClass)
 
 	@PostMapping("/evaluate/sync/list")
-	fun syncList(@RequestBody @Valid body: UuidsListRequest): List<SyncEvaluationResultItem> {
+	fun syncList(@RequestBody @Valid body: UuidsList): List<SyncEvaluationResultItem> {
 		log.info("http accepted evaluate sync list requestedUuids={}", body.list.size)
 		return evaluation.evaluateSyncList(body)
 	}
@@ -37,18 +38,18 @@ class EvaluateController(
 	fun syncOne(
 		@PathVariable jobPostingUuid: UUID,
 		@RequestHeader(name = "X-Joposcragent-correlationId", required = false) correlationId: UUID?,
-	): Map<String, Any> {
+	): EvaluateSyncJobPostingUuidPost200Response {
 		log.info(
 			"http accepted evaluate sync one jobPostingUuid={} correlationId={}",
 			jobPostingUuid,
 			correlationId?.toString() ?: "-",
 		)
 		val st = evaluation.evaluateSyncOne(jobPostingUuid, correlationId)
-		return mapOf("status" to st)
+		return EvaluateSyncJobPostingUuidPost200Response(st)
 	}
 
 	@PostMapping("/evaluate/async/list")
-	fun asyncList(@RequestBody @Valid body: UuidsListRequest): ResponseEntity<Void> {
+	fun asyncList(@RequestBody @Valid body: UuidsList): ResponseEntity<Void> {
 		log.info("http accepted evaluate async list requestedUuids={}", body.list.size)
 		asyncRunner.runList(body)
 		return ResponseEntity.ok().build()
@@ -70,10 +71,11 @@ class EvaluateController(
 
 	@PostMapping("/evaluate/async/batch")
 	fun asyncBatch(
-		@Valid @RequestBody request: BatchAsyncProcessingRequest,
+		@Valid @RequestBody request: BatchAsyncProcessingParameters,
 	): ResponseEntity<Void> {
-		log.info("http accepted evaluate async batch size={}", request.size)
-		asyncRunner.runBatch(request.size)
+		val size = request.propertySize.toInt()
+		log.info("http accepted evaluate async batch size={}", size)
+		asyncRunner.runBatch(size)
 		return ResponseEntity.ok().build()
 	}
 }

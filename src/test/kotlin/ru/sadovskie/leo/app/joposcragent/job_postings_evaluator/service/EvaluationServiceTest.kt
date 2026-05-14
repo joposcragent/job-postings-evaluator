@@ -12,357 +12,348 @@ import org.mockito.Mock
 import org.mockito.junit.jupiter.MockitoExtension
 import org.mockito.Mockito.lenient
 import org.mockito.kotlin.any
+import org.mockito.kotlin.argThat
 import org.mockito.kotlin.check
 import org.mockito.kotlin.eq
-import org.mockito.kotlin.isNull
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyNoInteractions
 import org.mockito.kotlin.verifyNoMoreInteractions
 import org.mockito.kotlin.whenever
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
 import org.springframework.web.server.ResponseStatusException
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.CeleryOrchestratorClient
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.JobPostingsCrudClient
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SentenceTransformerClient
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SettingsManagerClient
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.ApiEvaluationStatus
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.CosineSimilarityResponse
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.FinishEventRequest
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsItem
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsItemPatch
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsList
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.ReferenceContext
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.SearchQueryItemResponse
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.TextCorpus
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.UuidsListRequest
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SentenceTextFeignClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SentenceVectorsFeignClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SettingsReferenceContextFeignClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SettingsSearchQueryFeignClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.kafka.JobPostingEvaluateResultPublisher
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.store.PostingRow
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.store.PostingsRepository
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.sentence.model.CosineSimilarity
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.sentence.model.TextCorpus
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.sentence.model.VectorsPair
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.settings.model.ReferenceContext
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.settings.model.SearchQueriesItem
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.EvaluationStatus
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.UuidsList
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.support.FeignTestSupport
+import ru.sadovskie.leo.app.joposcragent.jobpostings.jooq.enums.EvaluationStatus as JooqEvaluationStatus
+import java.math.BigDecimal
+import java.time.OffsetDateTime
 import java.util.UUID
 
 @ExtendWith(MockitoExtension::class)
 class EvaluationServiceTest {
 
 	@Mock
-	private lateinit var crud: JobPostingsCrudClient
+	private lateinit var postings: PostingsRepository
 
 	@Mock
-	private lateinit var settings: SettingsManagerClient
+	private lateinit var settingsRef: SettingsReferenceContextFeignClient
 
 	@Mock
-	private lateinit var sentence: SentenceTransformerClient
+	private lateinit var settingsSq: SettingsSearchQueryFeignClient
 
 	@Mock
-	private lateinit var orchestrator: CeleryOrchestratorClient
+	private lateinit var textApi: SentenceTextFeignClient
 
-	private fun s() = EvaluationService(crud, settings, sentence, orchestrator)
+	@Mock
+	private lateinit var vectorsApi: SentenceVectorsFeignClient
+
+	@Mock
+	private lateinit var publisher: JobPostingEvaluateResultPublisher
+
+	private fun s() = EvaluationService(postings, settingsRef, settingsSq, textApi, vectorsApi, publisher)
 
 	@BeforeEach
 	fun stubSearchQueryDefault() {
-		lenient().`when`(settings.getSearchQuery(any())).thenReturn(SearchQueryItemResponse(contentRelevance = 0.0))
+		lenient().whenever(settingsSq.getSearchQuery(any())).thenReturn(
+			ResponseEntity.ok(searchQueriesItem(0.0)),
+		)
 	}
 
 	private val u1 = UUID.fromString("b0000000-0000-0000-0000-000000000001")
 	private val sq1 = UUID.fromString("d0000000-0000-0000-0000-000000000001")
 	private val vec3 = listOf(1.0, 0.0, 0.0)
-	private val ref3 = ReferenceContext("ctx", vec3)
+
+	private fun refResponse(vec: List<Double>): ResponseEntity<ReferenceContext> {
+		val bd = vec.map { BigDecimal.valueOf(it) }
+		return ResponseEntity.ok(ReferenceContext("ctx", bd, OffsetDateTime.now()))
+	}
+
+	private fun searchQueriesItem(contentRelevance: Double, uuid: UUID = sq1) =
+		SearchQueriesItem(uuid, "n", "q", contentRelevance, 0.5, true, false, OffsetDateTime.now())
+
+	private fun posting(
+		uuid: UUID = u1,
+		sq: UUID = sq1,
+		vec: List<Double>?,
+		content: String?,
+		st: JooqEvaluationStatus,
+	) = PostingRow(uuid, sq, vec, content, st)
 
 	@Test
 	fun `sync list 400 for empty`() {
-		assertThrows<ResponseStatusException> { s().evaluateSyncList(UuidsListRequest(listOf())) }
+		assertThrows<ResponseStatusException> { s().evaluateSyncList(UuidsList(emptyList())) }
 	}
 
 	@Test
-	fun `sync list 404 when find by uuids returns 404`() {
-		whenever(crud.findByUuids(any<UuidsListRequest>())).thenThrow(FeignTestSupport.feignError(404))
-		assertEquals(404, assertThrows<ResponseStatusException> { s().evaluateSyncList(UuidsListRequest(listOf(u1))) }.statusCode.value())
-	}
-
-	@Test
-	fun `sync list 404 when no eligible after filter`() {
-		whenever(crud.findByUuids(any<UuidsListRequest>())).thenReturn(
-			JobPostingsList(listOf(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.RELEVANT))),
-		)
-		assertEquals(404, assertThrows<ResponseStatusException> { s().evaluateSyncList(UuidsListRequest(listOf(u1))) }.statusCode.value())
+	fun `sync list 404 when no eligible`() {
+		whenever(postings.findByUuidsEligibleForSync(any())).thenReturn(emptyList())
+		assertEquals(404, assertThrows<ResponseStatusException> { s().evaluateSyncList(UuidsList(listOf(u1))) }.statusCode.value())
 	}
 
 	@Test
 	fun `full evaluation with stored vector marks relevant`() {
 		val vec = listOf(1.0, 0.0, 0.0)
-		val ref = ReferenceContext("ctx", listOf(1.0, 0.0, 0.0))
-		whenever(settings.getReferenceContext()).thenReturn(ref)
-		whenever(settings.getSearchQuery(eq(sq1))).thenReturn(SearchQueryItemResponse(contentRelevance = 0.5))
-		whenever(crud.findByUuids(any()))
-			.thenReturn(JobPostingsList(listOf(JobPostingsItem(u1, sq1, vec, "x", ApiEvaluationStatus.NEW))))
-		whenever(crud.getByUuid(u1)).thenReturn(
-			JobPostingsItem(u1, sq1, vec, "x", ApiEvaluationStatus.NEW),
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(listOf(1.0, 0.0, 0.0)))
+		whenever(settingsSq.getSearchQuery(eq(sq1))).thenReturn(ResponseEntity.ok(searchQueriesItem(0.5)))
+		val row = posting(vec = vec, content = "x", st = JooqEvaluationStatus.NEW)
+		whenever(postings.findByUuidsEligibleForSync(any())).thenReturn(listOf(row))
+		whenever(postings.findByUuid(u1)).thenReturn(row)
+		whenever(vectorsApi.cosineSimilarity(any<VectorsPair>())).thenReturn(
+			ResponseEntity.ok(CosineSimilarity().apply { similarity = BigDecimal.valueOf(0.99) }),
 		)
-		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(0.99))
 
-		val out = s().evaluateSyncList(UuidsListRequest(listOf(u1)))
+		val out = s().evaluateSyncList(UuidsList(listOf(u1)))
 		assertEquals(1, out.size)
 		assertEquals(u1, out[0].uuid)
-		assertEquals(ApiEvaluationStatus.RELEVANT, out[0].status)
+		assertEquals(EvaluationStatus.RELEVANT, out[0].status)
 
-		verify(sentence, never()).vectorize(any())
-		verify(crud).patch(
+		verify(textApi, never()).vectorize(any())
+		verify(postings).updateAfterEvaluation(
 			eq(u1),
-			check<JobPostingsItemPatch> { p ->
-				assertEquals(0.99, p.relevance!!, 0.0001)
-				assertEquals(ApiEvaluationStatus.RELEVANT, p.evaluationStatus)
-			},
+			eq(vec),
+			argThat { d: Double -> kotlin.math.abs(d - 0.99) < 1e-6 },
+			eq(JooqEvaluationStatus.RELEVANT),
 		)
 	}
 
 	@Test
 	fun `stored vector marks irrelevant by threshold`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(settings.getSearchQuery(eq(sq1))).thenReturn(SearchQueryItemResponse(contentRelevance = 0.5))
-		whenever(crud.findByUuids(any())).thenReturn(
-			JobPostingsList(listOf(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.PENDING))),
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsSq.getSearchQuery(eq(sq1))).thenReturn(ResponseEntity.ok(searchQueriesItem(0.5)))
+		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.PENDING)
+		whenever(postings.findByUuidsEligibleForSync(any())).thenReturn(listOf(row))
+		whenever(postings.findByUuid(u1)).thenReturn(row)
+		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
+			ResponseEntity.ok(CosineSimilarity().apply { similarity = BigDecimal.valueOf(0.1) }),
 		)
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.PENDING))
-		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(0.1))
 
-		val out = s().evaluateSyncList(UuidsListRequest(listOf(u1)))
-		assertEquals(ApiEvaluationStatus.IRRELEVANT, out[0].status)
+		val out = s().evaluateSyncList(UuidsList(listOf(u1)))
+		assertEquals(EvaluationStatus.IRRELEVANT, out[0].status)
 	}
 
 	@Test
 	fun `vectorize when no stored vector`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.findByUuids(any())).thenReturn(
-			JobPostingsList(listOf(JobPostingsItem(u1, sq1, null, "hello", ApiEvaluationStatus.NEW))),
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		val row = posting(vec = null, content = "hello", st = JooqEvaluationStatus.NEW)
+		whenever(postings.findByUuidsEligibleForSync(any())).thenReturn(listOf(row))
+		whenever(postings.findByUuid(u1)).thenReturn(row)
+		whenever(textApi.vectorize(any<TextCorpus>())).thenReturn(
+			ResponseEntity.ok(vec3.map { BigDecimal.valueOf(it) }),
 		)
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, null, "hello", ApiEvaluationStatus.NEW))
-		whenever(sentence.vectorize(any<TextCorpus>())).thenReturn(vec3)
-		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(0.2))
+		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
+			ResponseEntity.ok(CosineSimilarity().apply { similarity = BigDecimal.valueOf(0.2) }),
+		)
 
-		val out = s().evaluateSyncList(UuidsListRequest(listOf(u1)))
+		val out = s().evaluateSyncList(UuidsList(listOf(u1)))
 		assertNotNull(out[0].status)
-		verify(sentence).vectorize(TextCorpus("hello"))
+		verify(textApi).vectorize(any())
 	}
 
 	@Test
 	fun `get by uuid 404`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.findByUuids(any())).thenReturn(
-			JobPostingsList(listOf(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.NEW))),
-		)
-		whenever(crud.getByUuid(u1)).then { throw FeignTestSupport.feignError(404) }
-		assertEquals(404, assertThrows<ResponseStatusException> { s().evaluateSyncList(UuidsListRequest(listOf(u1))) }.statusCode.value())
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)
+		whenever(postings.findByUuidsEligibleForSync(any())).thenReturn(listOf(row))
+		whenever(postings.findByUuid(u1)).thenReturn(null)
+		assertEquals(404, assertThrows<ResponseStatusException> { s().evaluateSyncList(UuidsList(listOf(u1))) }.statusCode.value())
 	}
 
 	@Test
-	fun `sync one with correlation succeeds and finish`() {
+	fun `sync one with correlation succeeds and publish`() {
 		val cid = UUID.fromString("c0000000-0000-0000-0000-000000000001")
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.NEW))
-		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(1.0))
-		assertEquals(ApiEvaluationStatus.RELEVANT, s().evaluateSyncOne(u1, cid))
-		verify(orchestrator).finishEvent(
-			check<FinishEventRequest> { f ->
-				assertEquals(cid, f.correlationId)
-				assertEquals("SUCCEEDED", f.status)
-			},
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)
+		whenever(postings.findByUuid(u1)).thenReturn(row)
+		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
+			ResponseEntity.ok(CosineSimilarity().apply { similarity = BigDecimal.valueOf(1.0) }),
+		)
+		assertEquals(EvaluationStatus.RELEVANT, s().evaluateSyncOne(u1, cid))
+		verify(publisher).publishSucceeded(
+			eq(cid),
+			eq(u1),
+			eq(JooqEvaluationStatus.RELEVANT),
+			eq(1.0),
 		)
 	}
 
 	@Test
-	fun `sync one with correlation and failure finish failed`() {
+	fun `sync one with correlation and failure publish failed`() {
 		val cid = UUID.fromString("c0000000-0000-0000-0000-000000000002")
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.getByUuid(u1)).then { throw FeignTestSupport.feignError(404) }
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(postings.findByUuid(u1)).thenReturn(null)
 		assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, cid) }
-		verify(orchestrator).finishEvent(
-			check<FinishEventRequest> { f ->
-				assertEquals("FAILED", f.status)
-				assertNotNull(f.executionLog)
-			},
-		)
+		verify(publisher).publishFailed(eq(cid), eq(u1), any())
 	}
 
 	@Test
-	fun `orchestrator finish error is swallowed`() {
+	fun `publisher error is swallowed on success path`() {
 		val cid = UUID.fromString("c0000000-0000-0000-0000-000000000003")
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.NEW))
-		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(1.0))
-		whenever(orchestrator.finishEvent(any())).thenThrow(RuntimeException("x"))
-		assertEquals(ApiEvaluationStatus.RELEVANT, s().evaluateSyncOne(u1, cid))
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)
+		whenever(postings.findByUuid(u1)).thenReturn(row)
+		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
+			ResponseEntity.ok(CosineSimilarity().apply { similarity = BigDecimal.valueOf(1.0) }),
+		)
+		whenever(publisher.publishSucceeded(any(), any(), any(), any())).thenThrow(RuntimeException("x"))
+		assertEquals(EvaluationStatus.RELEVANT, s().evaluateSyncOne(u1, cid))
 	}
 
 	@Test
-	fun `load settings feign 404`() {
-		whenever(settings.getReferenceContext()).then { throw FeignTestSupport.feignError(404) }
+	fun `load settings 404 response`() {
+		whenever(settingsRef.getReferenceContext()).thenReturn(ResponseEntity.status(HttpStatus.NOT_FOUND).build())
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `load settings non feign`() {
-		whenever(settings.getReferenceContext()).thenThrow(IllegalStateException("boom"))
+		whenever(settingsRef.getReferenceContext()).thenThrow(IllegalStateException("boom"))
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `search query 404`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.NEW))
-		whenever(settings.getSearchQuery(any())).then { throw FeignTestSupport.feignError(404) }
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)
+		whenever(postings.findByUuid(u1)).thenReturn(row)
+		whenever(settingsSq.getSearchQuery(any())).thenReturn(ResponseEntity.status(HttpStatus.NOT_FOUND).build())
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `vectorize 413`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, null, "long", ApiEvaluationStatus.NEW))
-		whenever(sentence.vectorize(any<TextCorpus>())).then { throw FeignTestSupport.feignError(413) }
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		val row = posting(vec = null, content = "long", st = JooqEvaluationStatus.NEW)
+		whenever(postings.findByUuid(u1)).thenReturn(row)
+		whenever(textApi.vectorize(any())).thenReturn(ResponseEntity.status(413).build())
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `vector dimension mismatch`() {
-		whenever(settings.getReferenceContext()).thenReturn(ReferenceContext("c", listOf(1.0, 0.0)))
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, listOf(1.0, 0.0, 0.0), "x", ApiEvaluationStatus.NEW))
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(listOf(1.0, 0.0)))
+		val row = posting(vec = listOf(1.0, 0.0, 0.0), content = "x", st = JooqEvaluationStatus.NEW)
+		whenever(postings.findByUuid(u1)).thenReturn(row)
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `empty content cannot build embedding`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, null, "   ", ApiEvaluationStatus.NEW))
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		val row = posting(vec = null, content = "   ", st = JooqEvaluationStatus.NEW)
+		whenever(postings.findByUuid(u1)).thenReturn(row)
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `sync one re-evaluates RELEVANT posting`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "content", ApiEvaluationStatus.RELEVANT))
-		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(0.95))
-		assertEquals(ApiEvaluationStatus.RELEVANT, s().evaluateSyncOne(u1, null))
-		verify(crud).patch(eq(u1), any())
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		val row = posting(vec = vec3, content = "content", st = JooqEvaluationStatus.RELEVANT)
+		whenever(postings.findByUuid(u1)).thenReturn(row)
+		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
+			ResponseEntity.ok(CosineSimilarity().apply { similarity = BigDecimal.valueOf(0.95) }),
+		)
+		assertEquals(EvaluationStatus.RELEVANT, s().evaluateSyncOne(u1, null))
+		verify(postings).updateAfterEvaluation(eq(u1), any(), any(), any())
 	}
 
 	@Test
-	fun `patch 404`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.getByUuid(u1)).thenReturn(JobPostingsItem(u1, sq1, vec3, "x", ApiEvaluationStatus.NEW))
-		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(1.0))
-		whenever(crud.patch(eq(u1), any())).then { throw FeignTestSupport.feignError(404) }
-		assertEquals(404, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
+	fun `update throws not surfaced as 404 from service`() {
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)
+		whenever(postings.findByUuid(u1)).thenReturn(row)
+		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
+			ResponseEntity.ok(CosineSimilarity().apply { similarity = BigDecimal.valueOf(1.0) }),
+		)
+		whenever(postings.updateAfterEvaluation(eq(u1), any(), any(), any())).thenThrow(RuntimeException("db"))
+		assertThrows<RuntimeException> { s().evaluateSyncOne(u1, null) }
 	}
 
 	@Test
 	fun `downstream 5xx rethrow`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.getByUuid(u1)).then { throw FeignTestSupport.feignError(502, "err") }
+		whenever(settingsRef.getReferenceContext()).thenThrow(FeignTestSupport.feignError(502, "err"))
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `runBatch no op when cannot load settings`() {
-		whenever(settings.getReferenceContext()).then { throw FeignTestSupport.feignError(404) }
+		whenever(settingsRef.getReferenceContext()).thenReturn(ResponseEntity.status(HttpStatus.NOT_FOUND).build())
 		assertDoesNotThrow { s().runBatchIfPossible(10) }
-		verifyNoMoreInteractions(crud)
+		verifyNoMoreInteractions(postings)
 	}
 
 	@Test
 	fun `runBatch no op when batch size under 1`() {
 		s().runBatchIfPossible(0)
-		verifyNoInteractions(crud)
-	}
-
-	@Test
-	fun `runBatch when list 404`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(crud.list(any(), any(), any(), any(), any(), any(), any())).then { throw FeignTestSupport.feignError(404) }
-		assertDoesNotThrow { s().runBatchIfPossible(5) }
+		verifyNoInteractions(postings)
 	}
 
 	@Test
 	fun `runBatch when list is empty`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(
-			crud.list(
-				isNull<UUID>(),
-				isNull<String>(),
-				isNull<String>(),
-				isNull<String>(),
-				eq(listOf(ApiEvaluationStatus.NEW, ApiEvaluationStatus.PENDING)),
-				eq(1),
-				eq(2),
-			),
-		).thenReturn(JobPostingsList(emptyList()))
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(postings.listNewPendingOrderedLimit(2)).thenReturn(emptyList())
 		assertDoesNotThrow { s().runBatchIfPossible(2) }
 	}
 
 	@Test
 	fun `runBatch processes items`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		val item = JobPostingsItem(u1, sq1, vec3, "c", ApiEvaluationStatus.NEW)
-		whenever(
-			crud.list(
-				isNull<UUID>(),
-				isNull<String>(),
-				isNull<String>(),
-				isNull<String>(),
-				eq(listOf(ApiEvaluationStatus.NEW, ApiEvaluationStatus.PENDING)),
-				eq(1),
-				eq(1),
-			),
-		).thenReturn(JobPostingsList(listOf(item)))
-		whenever(sentence.cosineSimilarity(any())).thenReturn(CosineSimilarityResponse(0.4))
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		val row = posting(vec = vec3, content = "c", st = JooqEvaluationStatus.NEW)
+		whenever(postings.listNewPendingOrderedLimit(1)).thenReturn(listOf(row))
+		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
+			ResponseEntity.ok(CosineSimilarity().apply { similarity = BigDecimal.valueOf(0.4) }),
+		)
 		s().runBatchIfPossible(1)
-		verify(crud).patch(eq(u1), any())
+		verify(postings).updateAfterEvaluation(eq(u1), any(), any(), any())
 	}
 
 	@Test
-	fun `feignListOrNotFound 5xx`() {
-		val svc = s()
-		whenever(crud.findByUuids(any<UuidsListRequest>())).then { throw FeignTestSupport.feignError(503) }
-		assertEquals(500, assertThrows<ResponseStatusException> { svc.evaluateSyncList(UuidsListRequest(listOf(u1))) }.statusCode.value())
+	fun `sync list downstream 5xx from settings`() {
+		whenever(postings.findByUuidsEligibleForSync(any())).thenReturn(
+			listOf(posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)),
+		)
+		whenever(settingsRef.getReferenceContext()).thenThrow(FeignTestSupport.feignError(503))
+		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncList(UuidsList(listOf(u1))) }.statusCode.value())
 	}
 
 	@Test
-	fun `get reference 202`() {
-		whenever(settings.getReferenceContext()).then { throw FeignTestSupport.feignError(202) }
+	fun `get reference 202 response`() {
+		whenever(settingsRef.getReferenceContext()).thenReturn(ResponseEntity.status(202).build())
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
-	fun `runBatch list 502 is ignored`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(
-			crud.list(
-				isNull<UUID>(),
-				isNull<String>(),
-				isNull<String>(),
-				isNull<String>(),
-				eq(listOf(ApiEvaluationStatus.NEW, ApiEvaluationStatus.PENDING)),
-				eq(1),
-				eq(3),
-			),
-		).then { throw FeignTestSupport.feignError(502) }
-		assertDoesNotThrow { s().runBatchIfPossible(3) }
+	fun `evaluate from kafka publishes succeeded`() {
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.RELEVANT)
+		whenever(postings.findByUuid(u1)).thenReturn(row)
+		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
+			ResponseEntity.ok(CosineSimilarity().apply { similarity = BigDecimal.valueOf(1.0) }),
+		)
+		val job = UUID.fromString("e0000000-0000-0000-0000-000000000001")
+		s().evaluateFromKafkaBegin(job, u1)
+		verify(publisher).publishSucceeded(eq(job), eq(u1), eq(JooqEvaluationStatus.RELEVANT), eq(1.0))
 	}
 
 	@Test
-	fun `runBatch list non feign`() {
-		whenever(settings.getReferenceContext()).thenReturn(ref3)
-		whenever(
-			crud.list(
-				isNull<UUID>(),
-				isNull<String>(),
-				isNull<String>(),
-				isNull<String>(),
-				eq(listOf(ApiEvaluationStatus.NEW, ApiEvaluationStatus.PENDING)),
-				eq(1),
-				eq(3),
-			),
-		).thenThrow(IllegalStateException("down"))
-		assertDoesNotThrow { s().runBatchIfPossible(3) }
-	}
-
-	@Test
-	fun `feignListOrNull returns null on 404`() {
-		assertNull(s().feignListOrNull { throw FeignTestSupport.feignError(404) })
+	fun `evaluate from kafka publishes failed when not found`() {
+		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(postings.findByUuid(u1)).thenReturn(null)
+		val job = UUID.fromString("e0000000-0000-0000-0000-000000000002")
+		s().evaluateFromKafkaBegin(job, u1)
+		verify(publisher).publishFailed(eq(job), eq(u1), any())
 	}
 }

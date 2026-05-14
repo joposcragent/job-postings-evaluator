@@ -1,0 +1,74 @@
+openapi: 3.0.3
+info:
+  title: sentence-transformer slice for job-postings-evaluator
+  version: 1.0.0
+servers:
+  - url: http://sentence-transformer:8000/sentence-transformer
+paths:
+  /text/vectorize:
+    post:
+      tags:
+        - embedding
+      operationId: vectorize
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TextCorpus"
+      responses:
+        "200":
+          description: Vector
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vector"
+        "413":
+          description: Too long
+        "500":
+          description: Error
+  /vectors/cosine-similarity:
+    post:
+      tags:
+        - embedding
+      operationId: cosineSimilarity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VectorsPair"
+      responses:
+        "200":
+          description: Similarity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CosineSimilarity"
+        "500":
+          description: Error
+components:
+  schemas:
+    Vector:
+      type: array
+      items:
+        type: number
+    TextCorpus:
+      type: object
+      properties:
+        text:
+          type: string
+    VectorsPair:
+      type: object
+      properties:
+        left:
+          $ref: "#/components/schemas/Vector"
+        right:
+          $ref: "#/components/schemas/Vector"
+    CosineSimilarity:
+      type: object
+      properties:
+        similarity:
+          type: number
+      required:
+        - similarity

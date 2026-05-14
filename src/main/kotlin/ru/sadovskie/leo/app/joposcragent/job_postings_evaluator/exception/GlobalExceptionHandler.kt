@@ -21,7 +21,9 @@ class GlobalExceptionHandler {
 	@ExceptionHandler(ResponseStatusException::class)
 	fun responseStatusException(e: ResponseStatusException): ResponseEntity<String> {
 		val code = e.statusCode
-		if (code == HttpStatus.BAD_REQUEST || code == HttpStatus.NOT_FOUND) {
+		val status400 = code.value() == HttpStatus.BAD_REQUEST.value()
+		val status404 = code.value() == HttpStatus.NOT_FOUND.value()
+		if (status400 || status404) {
 			log.warn("responseStatusException status={} reason={}", code.value(), e.reason)
 			if (e.reason == null) {
 				return ResponseEntity.status(code).build()

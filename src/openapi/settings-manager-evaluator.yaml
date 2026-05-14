@@ -1,0 +1,102 @@
+openapi: 3.0.3
+info:
+  title: settings-manager slice for job-postings-evaluator
+  version: 1.0.0
+servers:
+  - url: http://settings-manager:8080/
+paths:
+  /reference-context:
+    get:
+      tags:
+        - reference-context
+      operationId: getReferenceContext
+      responses:
+        "200":
+          description: Reference context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReferenceContext"
+        "202":
+          description: Not ready
+        "500":
+          description: Error
+  /search-query/{entityUuid}:
+    get:
+      tags:
+        - search-query
+      operationId: getSearchQuery
+      parameters:
+        - name: entityUuid
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Search query
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchQueriesItem"
+        "404":
+          description: Not found
+        "500":
+          description: Error
+components:
+  schemas:
+    ReferenceContext:
+      type: object
+      properties:
+        context:
+          type: string
+        vector:
+          type: array
+          items:
+            type: number
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - context
+        - vector
+        - createdAt
+    SearchQueriesItem:
+      type: object
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        name:
+          type: string
+        query:
+          type: string
+        contentRelevance:
+          type: number
+          format: double
+        notificationRelevance:
+          type: number
+          format: double
+        isActive:
+          type: boolean
+        isLazyScraping:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - uuid
+        - name
+        - query
+        - contentRelevance
+        - notificationRelevance
+        - isActive
+        - isLazyScraping
+        - createdAt

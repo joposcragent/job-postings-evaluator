@@ -5,54 +5,54 @@ import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.web.server.ResponseStatusException
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.CeleryOrchestratorClient
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.JobPostingsCrudClient
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SentenceTransformerClient
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SettingsManagerClient
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.ApiEvaluationStatus
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.FinishEventRequest
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsItem
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.JobPostingsItemPatch
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.ReferenceContext
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.SyncEvaluationResultItem
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.TextCorpus
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.UuidsListRequest
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.VectorsPair
-import java.time.Instant
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SentenceTextFeignClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SentenceVectorsFeignClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SettingsReferenceContextFeignClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.client.SettingsSearchQueryFeignClient
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.kafka.JobPostingEvaluateResultPublisher
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.store.PostingRow
+import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.store.PostingsRepository
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.sentence.model.TextCorpus
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.sentence.model.VectorsPair
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.settings.model.ReferenceContext
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.EvaluationStatus
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.SyncEvaluationResultItem
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.UuidsList
+import ru.sadovskie.leo.app.joposcragent.jobpostings.jooq.enums.EvaluationStatus as JooqEvaluationStatus
+import java.math.BigDecimal
 import java.util.UUID
 
-private val Eligible: Set<ApiEvaluationStatus> = setOf(ApiEvaluationStatus.NEW, ApiEvaluationStatus.PENDING)
+private val EligibleStatuses: Set<JooqEvaluationStatus> = setOf(JooqEvaluationStatus.NEW, JooqEvaluationStatus.PENDING)
 
 @Service
 class EvaluationService(
-	private val jobPostingsCrud: JobPostingsCrudClient,
-	private val settings: SettingsManagerClient,
-	private val sentence: SentenceTransformerClient,
-	private val orchestrator: CeleryOrchestratorClient,
+	private val postings: PostingsRepository,
+	private val settingsRef: SettingsReferenceContextFeignClient,
+	private val settingsSq: SettingsSearchQueryFeignClient,
+	private val textApi: SentenceTextFeignClient,
+	private val vectorsApi: SentenceVectorsFeignClient,
+	private val evaluateResultPublisher: JobPostingEvaluateResultPublisher,
 ) {
 
 	private val log = LoggerFactory.getLogger(javaClass)
 
-	fun evaluateSyncList(body: UuidsListRequest): List<SyncEvaluationResultItem> {
+	fun evaluateSyncList(body: UuidsList): List<SyncEvaluationResultItem> {
 		if (body.list.isEmpty()) {
 			throw ResponseStatusException(HttpStatus.BAD_REQUEST)
 		}
 		log.info("evaluateSyncList start requestedUuids={}", body.list.size)
-		val fromCrud = feignListOrNotFound { jobPostingsCrud.findByUuids(UuidsListRequest(body.list)) }
-		val candidates = fromCrud.list
-			.filter { it.evaluationStatus != null && it.evaluationStatus in Eligible }
-			.sortedBy { it.uuid }
+		val candidates = postings.findByUuidsEligibleForSync(body.list)
 		if (candidates.isEmpty()) {
 			throw ResponseStatusException(HttpStatus.NOT_FOUND)
 		}
 		val out = candidates.map { p ->
-			SyncEvaluationResultItem(p.uuid, evaluateAndPersist(p.uuid, null, null, forceReevaluate = false).status)
+			SyncEvaluationResultItem(p.uuid, evaluateAndPersist(p.uuid, null, null, forceReevaluate = false).status.toApi())
 		}
 		log.info("evaluateSyncList done evaluatedCount={}", out.size)
 		return out
 	}
 
-	fun evaluateSyncOne(jobPostingUuid: UUID, correlationId: UUID?): ApiEvaluationStatus {
+	fun evaluateSyncOne(jobPostingUuid: UUID, correlationId: UUID?): EvaluationStatus {
 		log.info(
 			"evaluateSyncOne start jobPostingUuid={} correlationId={}",
 			jobPostingUuid,
@@ -66,12 +66,36 @@ class EvaluationService(
 				correlationId?.toString() ?: "-",
 				out.status,
 			)
-			out.status
+			out.status.toApi()
 		} catch (e: Exception) {
 			if (correlationId != null) {
-				finishToOrchestrator(correlationId, jobPostingUuid, "FAILED", e)
+				publishCorrelationFailed(correlationId, jobPostingUuid, e)
 			}
 			throw e
+		}
+	}
+
+	fun evaluateFromKafkaBegin(jobUuid: UUID, jobPostingUuid: UUID) {
+		log.info("kafka evaluate begin jobUuid={} jobPostingUuid={}", jobUuid, jobPostingUuid)
+		try {
+			val outcome = evaluateAndPersist(jobPostingUuid, null, null, forceReevaluate = true)
+			evaluateResultPublisher.publishSucceeded(
+				jobUuid,
+				jobPostingUuid,
+				outcome.status,
+				outcome.relevance,
+			)
+		} catch (e: ResponseStatusException) {
+			val msg = if (e.statusCode == HttpStatus.NOT_FOUND) {
+				"Job posting $jobPostingUuid not found"
+			} else {
+				e.reason ?: e.message ?: e.toString()
+			}
+			log.error("kafka evaluate failed jobUuid={} jobPostingUuid={}", jobUuid, jobPostingUuid, e)
+			evaluateResultPublisher.publishFailed(jobUuid, jobPostingUuid, msg)
+		} catch (e: Exception) {
+			log.error("kafka evaluate failed jobUuid={} jobPostingUuid={}", jobUuid, jobPostingUuid, e)
+			evaluateResultPublisher.publishFailed(jobUuid, jobPostingUuid, e.message ?: e.toString())
 		}
 	}
 
@@ -81,53 +105,47 @@ class EvaluationService(
 			log.info("runBatchIfPossible skip batchSize < 1")
 			return
 		}
-		val ctx = try {
-			fetchReferenceContext()
+		val (refCtx, refVec) = try {
+			fetchReferenceContextVector()
 		} catch (e: Exception) {
 			log.warn("Пакетная оценка: невозможно загрузить настройки: {}", e.toString(), e)
 			return
 		}
-		val page = feignListOrNull {
-			jobPostingsCrud.list(
-				uuid = null,
-				uid = null,
-				title = null,
-				company = null,
-				evaluationStatuses = listOf(ApiEvaluationStatus.NEW, ApiEvaluationStatus.PENDING),
-				page = 1,
-				size = batchSize,
-			)
-		} ?: run {
-			log.info("runBatchIfPossible done listCallFailedOrNull candidatesCount=0")
+		val page = try {
+			postings.listNewPendingOrderedLimit(batchSize)
+		} catch (e: Exception) {
+			log.warn("Пакетная оценка: ошибка выборки: {}", e.toString(), e)
 			return
 		}
-
-		if (page.list.isEmpty()) {
+		if (page.isEmpty()) {
 			log.info("runBatchIfPossible done no candidates in NEW/PENDING")
 			return
 		}
-		log.info("runBatchIfPossible candidatesCount={}", page.list.size)
-		for (p in page.list) {
+		log.info("runBatchIfPossible candidatesCount={}", page.size)
+		for (p in page) {
 			try {
-				val o = evaluateAndPersist(p.uuid, null, PreloadedConfig(ctx, p), forceReevaluate = false)
+				val o = evaluateAndPersistWithPreloaded(p.uuid, null, refCtx, refVec, p, forceReevaluate = false)
 				log.info("Пакетная оценка: uuid={} -> {}", p.uuid, o.status)
 			} catch (e: Exception) {
 				log.error("Пакетная оценка: сбой для {}: {}", p.uuid, e.toString(), e)
 			}
 		}
-		log.info("runBatchIfPossible done processedCount={}", page.list.size)
+		log.info("runBatchIfPossible done processedCount={}", page.size)
 	}
 
-	/**
-	 * @param pre if non-null, reuse reference context and posting from list (batch).
-	 * @param forceReevaluate if true (одиночный `evaluateSyncOne`), статус оценки не ограничивается NEW/PENDING — допускается переоценка RELEVANT/IRRELEVANT и т.д.
-	 * @return outcome with status; for sync single with [correlationId] sends SUCCEEDED to orchestrator on success.
-	 */
+	private data class Outcome(val status: JooqEvaluationStatus, val relevance: Double)
+
+	private data class PreloadedConfig(
+		val refContext: String,
+		val refVector: List<Double>,
+		val posting: PostingRow,
+	)
+
 	private fun evaluateAndPersist(
 		jobPostingUuid: UUID,
 		correlationId: UUID?,
 		pre: PreloadedConfig?,
-		forceReevaluate: Boolean = false,
+		forceReevaluate: Boolean,
 	): Outcome {
 		log.info(
 			"eval start jobPostingUuid={} correlationId={} batchPreloaded={}",
@@ -135,13 +153,13 @@ class EvaluationService(
 			correlationId?.toString() ?: "-",
 			pre != null,
 		)
-		val ref = if (pre != null) {
-			pre.context
+		val (refContext, refVector) = if (pre != null) {
+			pre.refContext to pre.refVector
 		} else {
-			logStep("settings.getReferenceContext", jobPostingUuid, correlationId) { fetchReferenceContext() }
+			logStep("settings.getReferenceContext", jobPostingUuid, correlationId) { fetchReferenceContextVector() }
 		}
-		val item: JobPostingsItem = if (pre?.posting != null) {
-			if (!forceReevaluate && (pre.posting.evaluationStatus == null || pre.posting.evaluationStatus !in Eligible)) {
+		val item: PostingRow = if (pre?.posting != null) {
+			if (!forceReevaluate && pre.posting.evaluationStatus !in EligibleStatuses) {
 				throw ResponseStatusException(HttpStatus.NOT_FOUND)
 			}
 			if (pre.posting.uuid != jobPostingUuid) {
@@ -149,29 +167,47 @@ class EvaluationService(
 			}
 			pre.posting
 		} else {
-			logStep("job_postings_crud.get", jobPostingUuid, correlationId) { getPostingOrNotFound(jobPostingUuid) }
+			logStep("postings.get", jobPostingUuid, correlationId) {
+				getPostingOrNotFound(jobPostingUuid, forceReevaluate)
+			}
 		}
-		if (!forceReevaluate && (item.evaluationStatus == null || item.evaluationStatus !in Eligible)) {
+		if (!forceReevaluate && item.evaluationStatus !in EligibleStatuses) {
 			throw ResponseStatusException(HttpStatus.NOT_FOUND)
 		}
+		return evaluateCoreWithRefs(item, refVector, jobPostingUuid, correlationId)
+	}
+
+	private fun evaluateAndPersistWithPreloaded(
+		jobPostingUuid: UUID,
+		correlationId: UUID?,
+		refContext: String,
+		refVector: List<Double>,
+		posting: PostingRow,
+		forceReevaluate: Boolean,
+	): Outcome = evaluateAndPersist(
+		jobPostingUuid,
+		correlationId,
+		PreloadedConfig(refContext, refVector, posting),
+		forceReevaluate,
+	)
+
+	private fun evaluateCoreWithRefs(
+		item: PostingRow,
+		refVector: List<Double>,
+		jobPostingUuid: UUID,
+		correlationId: UUID?,
+	): Outcome {
 		val contentThreshold = logStep("settings.getSearchQuery", jobPostingUuid, correlationId) {
 			fetchContentRelevanceThreshold(item.searchQueryUuid)
 		}
-		val (vector, sim) = computeVectorAndSimilarity(item, ref, jobPostingUuid, correlationId)
+		val (vector, sim) = computeVectorAndSimilarity(item, refVector, jobPostingUuid, correlationId)
 		val relevant = sim >= contentThreshold
-		val st = if (relevant) ApiEvaluationStatus.RELEVANT else ApiEvaluationStatus.IRRELEVANT
-		logStep("job_postings_crud.patch", jobPostingUuid, correlationId) {
-			patchOrThrow(
-				jobPostingUuid,
-				JobPostingsItemPatch(
-					contentVector = vector,
-					relevance = sim,
-					evaluationStatus = st,
-				),
-			)
+		val st = if (relevant) JooqEvaluationStatus.RELEVANT else JooqEvaluationStatus.IRRELEVANT
+		logStep("postings.update", jobPostingUuid, correlationId) {
+			postings.updateAfterEvaluation(jobPostingUuid, vector, sim, st)
 		}
 		if (correlationId != null) {
-			finishToOrchestrator(correlationId, jobPostingUuid, "SUCCEEDED", null)
+			publishCorrelationSucceeded(correlationId, jobPostingUuid, st, sim)
 		}
 		log.info(
 			"eval done jobPostingUuid={} correlationId={} status={}",
@@ -179,7 +215,7 @@ class EvaluationService(
 			correlationId?.toString() ?: "-",
 			st,
 		)
-		return Outcome(st)
+		return Outcome(st, sim)
 	}
 
 	private fun <T> logStep(
@@ -214,26 +250,35 @@ class EvaluationService(
 		}
 	}
 
-	private data class PreloadedConfig(
-		val context: ReferenceContext,
-		val posting: JobPostingsItem,
-	)
-
-	private data class Outcome(val status: ApiEvaluationStatus)
-
-	private fun getPostingOrNotFound(uuid: UUID) = try {
-		jobPostingsCrud.getByUuid(uuid)
-	} catch (e: FeignException) {
-		if (e.status() == 404) {
+	private fun getPostingOrNotFound(uuid: UUID, forceReevaluate: Boolean): PostingRow {
+		val row = postings.findByUuid(uuid) ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
+		if (!forceReevaluate && row.evaluationStatus !in EligibleStatuses) {
 			throw ResponseStatusException(HttpStatus.NOT_FOUND)
 		}
-		maybeRethrowDownstream5xx(e)
-		throw e
+		return row
 	}
 
-	private fun fetchReferenceContext(): ReferenceContext {
-		val ref = try {
-			settings.getReferenceContext()
+	private fun fetchReferenceContextVector(): Pair<String, List<Double>> {
+		val ref: ReferenceContext = try {
+			val res = settingsRef.getReferenceContext()
+			when (res.statusCode.value()) {
+				200 -> res.body ?: throw ResponseStatusException(
+					HttpStatus.INTERNAL_SERVER_ERROR,
+					"Empty reference context from settings",
+				)
+				404, 202 -> throw ResponseStatusException(
+					HttpStatus.INTERNAL_SERVER_ERROR,
+					"Reference context is not available",
+				)
+				in 500..599 -> throw ResponseStatusException(
+					HttpStatus.INTERNAL_SERVER_ERROR,
+					"Downstream service error: HTTP " + res.statusCode.value(),
+				)
+				else -> throw ResponseStatusException(
+					HttpStatus.INTERNAL_SERVER_ERROR,
+					"Unexpected status from settings: " + res.statusCode.value(),
+				)
+			}
 		} catch (e: FeignException) {
 			if (e.status() == 404 || e.status() == 202) {
 				throw ResponseStatusException(
@@ -243,6 +288,8 @@ class EvaluationService(
 				)
 			}
 			maybeRethrowDownstream5xx(e)
+			throw e
+		} catch (e: ResponseStatusException) {
 			throw e
 		} catch (e: Exception) {
 			throw ResponseStatusException(
@@ -254,12 +301,25 @@ class EvaluationService(
 		if (ref.vector.isEmpty() || ref.context.isBlank()) {
 			throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Invalid reference context from settings")
 		}
-		return ref
+		return ref.context to ref.vector.map { it.toDouble() }
 	}
 
 	private fun fetchContentRelevanceThreshold(searchQueryUuid: UUID): Double {
 		val sq = try {
-			settings.getSearchQuery(searchQueryUuid)
+			val res = settingsSq.getSearchQuery(searchQueryUuid)
+			if (res.statusCode.value() == 404) {
+				throw ResponseStatusException(
+					HttpStatus.INTERNAL_SERVER_ERROR,
+					"Search query is not available for uuid $searchQueryUuid",
+				)
+			}
+			if (!res.statusCode.is2xxSuccessful || res.body == null) {
+				throw ResponseStatusException(
+					HttpStatus.INTERNAL_SERVER_ERROR,
+					"Search query unexpected status: " + res.statusCode.value(),
+				)
+			}
+			res.body!!
 		} catch (e: FeignException) {
 			if (e.status() == 404) {
 				throw ResponseStatusException(
@@ -270,6 +330,8 @@ class EvaluationService(
 			}
 			maybeRethrowDownstream5xx(e)
 			throw e
+		} catch (e: ResponseStatusException) {
+			throw e
 		} catch (e: Exception) {
 			throw ResponseStatusException(
 				HttpStatus.INTERNAL_SERVER_ERROR,
@@ -277,7 +339,7 @@ class EvaluationService(
 				e,
 			)
 		}
-		val v = sq.contentRelevance
+		val v = sq.contentRelevance.toDouble()
 		if (!v.isFinite() || v !in 0.0..1.0) {
 			throw ResponseStatusException(
 				HttpStatus.INTERNAL_SERVER_ERROR,
@@ -288,8 +350,8 @@ class EvaluationService(
 	}
 
 	private fun computeVectorAndSimilarity(
-		item: JobPostingsItem,
-		ref: ReferenceContext,
+		item: PostingRow,
+		refVector: List<Double>,
 		jobPostingUuid: UUID,
 		correlationId: UUID?,
 	): Pair<List<Double>, Double> {
@@ -304,7 +366,22 @@ class EvaluationService(
 			}
 			v = logStep("sentence_transformer.vectorize", jobPostingUuid, correlationId) {
 				try {
-					sentence.vectorize(TextCorpus(item.content))
+					val tc = TextCorpus()
+					tc.setText(item.content)
+					val res = textApi.vectorize(tc)
+					if (!res.statusCode.is2xxSuccessful || res.body == null) {
+						if (res.statusCode.value() == 413) {
+							throw ResponseStatusException(
+								HttpStatus.INTERNAL_SERVER_ERROR,
+								"Content text too long for embedding",
+							)
+						}
+						throw ResponseStatusException(
+							HttpStatus.INTERNAL_SERVER_ERROR,
+							"Vectorize failed: HTTP " + res.statusCode.value(),
+						)
+					}
+					res.body!!.map { it.toDouble() }
 				} catch (e: FeignException) {
 					if (e.status() == 413) {
 						throw ResponseStatusException(
@@ -327,7 +404,7 @@ class EvaluationService(
 				cid,
 			)
 		}
-		if (v.size != ref.vector.size) {
+		if (v.size != refVector.size) {
 			throw ResponseStatusException(
 				HttpStatus.INTERNAL_SERVER_ERROR,
 				"Vector dimension mismatch between posting and reference",
@@ -335,7 +412,17 @@ class EvaluationService(
 		}
 		val sim = logStep("sentence_transformer.cosineSimilarity", jobPostingUuid, correlationId) {
 			try {
-				sentence.cosineSimilarity(VectorsPair(left = v, right = ref.vector)).similarity
+				val pair = VectorsPair()
+				pair.left = v.map { BigDecimal.valueOf(it) }
+				pair.right = refVector.map { BigDecimal.valueOf(it) }
+				val res = vectorsApi.cosineSimilarity(pair)
+				if (!res.statusCode.is2xxSuccessful || res.body == null) {
+					throw ResponseStatusException(
+						HttpStatus.INTERNAL_SERVER_ERROR,
+						"Cosine similarity failed: HTTP " + res.statusCode.value(),
+					)
+				}
+				res.body!!.similarity.toDouble()
 			} catch (e: FeignException) {
 				maybeRethrowDownstream5xx(e)
 				throw e
@@ -344,41 +431,6 @@ class EvaluationService(
 			}
 		}
 		return v to sim
-	}
-
-	private fun patchOrThrow(jobPostingUuid: UUID, p: JobPostingsItemPatch) = try {
-		jobPostingsCrud.patch(jobPostingUuid, p)
-	} catch (e: FeignException) {
-		if (e.status() == 404) {
-			throw ResponseStatusException(HttpStatus.NOT_FOUND)
-		}
-		maybeRethrowDownstream5xx(e)
-		throw e
-	}
-
-	fun <T> feignListOrNotFound(block: () -> T): T = try {
-		block()
-	} catch (e: FeignException) {
-		if (e.status() == 404) {
-			throw ResponseStatusException(HttpStatus.NOT_FOUND)
-		}
-		maybeRethrowDownstream5xx(e)
-		throw e
-	}
-
-	fun <T> feignListOrNull(block: () -> T): T? {
-		return try {
-			block()
-		} catch (e: FeignException) {
-			if (e.status() == 404) {
-				return null
-			}
-			log.warn("List request: {}", e.toString(), e)
-			null
-		} catch (e: Exception) {
-			log.error("List request: {}", e.toString(), e)
-			null
-		}
 	}
 
 	private fun maybeRethrowDownstream5xx(e: FeignException) {
@@ -391,47 +443,64 @@ class EvaluationService(
 		}
 	}
 
-	private fun finishToOrchestrator(
-		correlationId: UUID,
+	private fun publishCorrelationSucceeded(
+		jobUuid: UUID,
 		jobPostingUuid: UUID,
-		state: String,
-		exception: Throwable? = null,
+		status: JooqEvaluationStatus,
+		relevance: Double,
 	) {
-		val cid = correlationId.toString()
+		val cid = jobUuid.toString()
 		val start = System.nanoTime()
 		try {
-			val logText = if (state == "FAILED" && exception != null) {
-				(exception.toString() + (exception.cause?.let { "\nCause: " + it } ?: ""))
-			} else {
-				null
-			}
-			orchestrator.finishEvent(
-				FinishEventRequest(
-					correlationId = correlationId,
-					status = state,
-					createdAt = Instant.now(),
-					jobPostingUuid = jobPostingUuid,
-					executionLog = logText,
-				),
-			)
+			evaluateResultPublisher.publishSucceeded(jobUuid, jobPostingUuid, status, relevance)
 			val ms = (System.nanoTime() - start) / 1_000_000L
 			log.info(
-				"eval step=celery_orchestrator.finishEvent jobPostingUuid={} correlationId={} durationMs={} outcome=success state={}",
+				"eval step=kafka.evaluateResult jobPostingUuid={} correlationId={} durationMs={} outcome=success state=SUCCEEDED",
 				jobPostingUuid,
 				cid,
 				ms,
-				state,
 			)
 		} catch (e: Exception) {
 			val ms = (System.nanoTime() - start) / 1_000_000L
 			log.info(
-				"eval step=celery_orchestrator.finishEvent jobPostingUuid={} correlationId={} durationMs={} outcome=error state={}",
+				"eval step=kafka.evaluateResult jobPostingUuid={} correlationId={} durationMs={} outcome=error",
 				jobPostingUuid,
 				cid,
 				ms,
-				state,
 			)
-			log.error("Celery orchestrator finish: {}", e.toString(), e)
+			log.error("Kafka evaluate result publish: {}", e.toString(), e)
 		}
 	}
+
+	private fun publishCorrelationFailed(jobUuid: UUID, jobPostingUuid: UUID, exception: Throwable) {
+		val cid = jobUuid.toString()
+		val start = System.nanoTime()
+		try {
+			val logText = exception.toString() + (exception.cause?.let { "\nCause: " + it } ?: "")
+			evaluateResultPublisher.publishFailed(jobUuid, jobPostingUuid, logText)
+			val ms = (System.nanoTime() - start) / 1_000_000L
+			log.info(
+				"eval step=kafka.evaluateResult jobPostingUuid={} correlationId={} durationMs={} outcome=success state=FAILED",
+				jobPostingUuid,
+				cid,
+				ms,
+			)
+		} catch (e: Exception) {
+			val ms = (System.nanoTime() - start) / 1_000_000L
+			log.info(
+				"eval step=kafka.evaluateResult jobPostingUuid={} correlationId={} durationMs={} outcome=error state=FAILED",
+				jobPostingUuid,
+				cid,
+				ms,
+			)
+			log.error("Kafka evaluate result publish: {}", e.toString(), e)
+		}
+	}
+}
+
+private fun JooqEvaluationStatus.toApi(): EvaluationStatus = when (this) {
+	JooqEvaluationStatus.NEW -> EvaluationStatus.NEW
+	JooqEvaluationStatus.PENDING -> EvaluationStatus.PENDING
+	JooqEvaluationStatus.IRRELEVANT -> EvaluationStatus.IRRELEVANT
+	JooqEvaluationStatus.RELEVANT -> EvaluationStatus.RELEVANT
 }

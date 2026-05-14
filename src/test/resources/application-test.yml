@@ -1,0 +1,14 @@
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration
+  datasource:
+    driver-class-name: org.postgresql.Driver
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:job-postings-test-schema.sql
+
+app:
+  kafka:
+    consumer-enabled: false

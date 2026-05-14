@@ -3,7 +3,7 @@ package ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.service
 import org.slf4j.LoggerFactory
 import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Component
-import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.dto.UuidsListRequest
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.UuidsList
 import java.util.UUID
 
 @Component
@@ -14,7 +14,7 @@ class AsyncEvaluationRunner(
 	private val log = LoggerFactory.getLogger(javaClass)
 
 	@Async("evaluationExecutor")
-	fun runList(body: UuidsListRequest) {
+	fun runList(body: UuidsList) {
 		log.info("async evaluate list accepted requestedUuids={}", body.list.size)
 		runCatching { evaluation.evaluateSyncList(body) }
 			.onSuccess { log.info("async evaluate list completed requestedUuids={}", body.list.size) }
