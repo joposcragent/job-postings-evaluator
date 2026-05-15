@@ -21,6 +21,22 @@ paths:
           description: Not ready
         "500":
           description: Error
+  /reference-context/vector:
+    get:
+      tags:
+        - reference-context
+      operationId: getReferenceContextVector
+      responses:
+        "200":
+          description: Reference context embedding only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReferenceContextVector"
+        "202":
+          description: Not ready
+        "500":
+          description: Error
   /search-query/{entityUuid}:
     get:
       tags:
@@ -65,6 +81,15 @@ components:
         - context
         - vector
         - createdAt
+    ReferenceContextVector:
+      type: object
+      properties:
+        vector:
+          type: array
+          items:
+            type: number
+      required:
+        - vector
     SearchQueriesItem:
       type: object
       properties:

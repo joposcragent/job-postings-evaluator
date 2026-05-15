@@ -33,7 +33,7 @@ import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.store.PostingsRe
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.sentence.model.CosineSimilarity
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.sentence.model.TextCorpus
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.sentence.model.VectorsPair
-import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.settings.model.ReferenceContext
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.settings.model.ReferenceContextVector
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.settings.model.SearchQueriesItem
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.EvaluationStatus
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.UuidsList
@@ -77,9 +77,9 @@ class EvaluationServiceTest {
 	private val sq1 = UUID.fromString("d0000000-0000-0000-0000-000000000001")
 	private val vec3 = listOf(1.0, 0.0, 0.0)
 
-	private fun refResponse(vec: List<Double>): ResponseEntity<ReferenceContext> {
+	private fun refVectorResponse(vec: List<Double>): ResponseEntity<ReferenceContextVector> {
 		val bd = vec.map { BigDecimal.valueOf(it) }
-		return ResponseEntity.ok(ReferenceContext("ctx", bd, OffsetDateTime.now()))
+		return ResponseEntity.ok(ReferenceContextVector(bd))
 	}
 
 	private fun searchQueriesItem(contentRelevance: Double, uuid: UUID = sq1) =
@@ -107,7 +107,7 @@ class EvaluationServiceTest {
 	@Test
 	fun `full evaluation with stored vector marks relevant`() {
 		val vec = listOf(1.0, 0.0, 0.0)
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(listOf(1.0, 0.0, 0.0)))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(listOf(1.0, 0.0, 0.0)))
 		whenever(settingsSq.getSearchQuery(eq(sq1))).thenReturn(ResponseEntity.ok(searchQueriesItem(0.5)))
 		val row = posting(vec = vec, content = "x", st = JooqEvaluationStatus.NEW)
 		whenever(postings.findByUuidsEligibleForSync(any())).thenReturn(listOf(row))
@@ -132,7 +132,7 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `stored vector marks irrelevant by threshold`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		whenever(settingsSq.getSearchQuery(eq(sq1))).thenReturn(ResponseEntity.ok(searchQueriesItem(0.5)))
 		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.PENDING)
 		whenever(postings.findByUuidsEligibleForSync(any())).thenReturn(listOf(row))
@@ -147,7 +147,7 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `vectorize when no stored vector`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		val row = posting(vec = null, content = "hello", st = JooqEvaluationStatus.NEW)
 		whenever(postings.findByUuidsEligibleForSync(any())).thenReturn(listOf(row))
 		whenever(postings.findByUuid(u1)).thenReturn(row)
@@ -165,7 +165,7 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `get by uuid 404`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)
 		whenever(postings.findByUuidsEligibleForSync(any())).thenReturn(listOf(row))
 		whenever(postings.findByUuid(u1)).thenReturn(null)
@@ -175,7 +175,7 @@ class EvaluationServiceTest {
 	@Test
 	fun `sync one with correlation succeeds and publish`() {
 		val cid = UUID.fromString("c0000000-0000-0000-0000-000000000001")
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)
 		whenever(postings.findByUuid(u1)).thenReturn(row)
 		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
@@ -193,7 +193,7 @@ class EvaluationServiceTest {
 	@Test
 	fun `sync one with correlation and failure publish failed`() {
 		val cid = UUID.fromString("c0000000-0000-0000-0000-000000000002")
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		whenever(postings.findByUuid(u1)).thenReturn(null)
 		assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, cid) }
 		verify(publisher).publishFailed(eq(cid), eq(u1), any())
@@ -202,7 +202,7 @@ class EvaluationServiceTest {
 	@Test
 	fun `publisher error is swallowed on success path`() {
 		val cid = UUID.fromString("c0000000-0000-0000-0000-000000000003")
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)
 		whenever(postings.findByUuid(u1)).thenReturn(row)
 		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
@@ -214,19 +214,19 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `load settings 404 response`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(ResponseEntity.status(HttpStatus.NOT_FOUND).build())
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(ResponseEntity.status(HttpStatus.NOT_FOUND).build())
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `load settings non feign`() {
-		whenever(settingsRef.getReferenceContext()).thenThrow(IllegalStateException("boom"))
+		whenever(settingsRef.getReferenceContextVector()).thenThrow(IllegalStateException("boom"))
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `search query 404`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)
 		whenever(postings.findByUuid(u1)).thenReturn(row)
 		whenever(settingsSq.getSearchQuery(any())).thenReturn(ResponseEntity.status(HttpStatus.NOT_FOUND).build())
@@ -235,7 +235,7 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `vectorize 413`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		val row = posting(vec = null, content = "long", st = JooqEvaluationStatus.NEW)
 		whenever(postings.findByUuid(u1)).thenReturn(row)
 		whenever(textApi.vectorize(any())).thenReturn(ResponseEntity.status(413).build())
@@ -244,7 +244,7 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `vector dimension mismatch`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(listOf(1.0, 0.0)))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(listOf(1.0, 0.0)))
 		val row = posting(vec = listOf(1.0, 0.0, 0.0), content = "x", st = JooqEvaluationStatus.NEW)
 		whenever(postings.findByUuid(u1)).thenReturn(row)
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
@@ -252,7 +252,7 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `empty content cannot build embedding`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		val row = posting(vec = null, content = "   ", st = JooqEvaluationStatus.NEW)
 		whenever(postings.findByUuid(u1)).thenReturn(row)
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
@@ -260,7 +260,7 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `sync one re-evaluates RELEVANT posting`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		val row = posting(vec = vec3, content = "content", st = JooqEvaluationStatus.RELEVANT)
 		whenever(postings.findByUuid(u1)).thenReturn(row)
 		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
@@ -272,7 +272,7 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `update throws not surfaced as 404 from service`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)
 		whenever(postings.findByUuid(u1)).thenReturn(row)
 		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
@@ -284,13 +284,13 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `downstream 5xx rethrow`() {
-		whenever(settingsRef.getReferenceContext()).thenThrow(FeignTestSupport.feignError(502, "err"))
+		whenever(settingsRef.getReferenceContextVector()).thenThrow(FeignTestSupport.feignError(502, "err"))
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `runBatch no op when cannot load settings`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(ResponseEntity.status(HttpStatus.NOT_FOUND).build())
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(ResponseEntity.status(HttpStatus.NOT_FOUND).build())
 		assertDoesNotThrow { s().runBatchIfPossible(10) }
 		verifyNoMoreInteractions(postings)
 	}
@@ -303,14 +303,14 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `runBatch when list is empty`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		whenever(postings.listNewPendingOrderedLimit(2)).thenReturn(emptyList())
 		assertDoesNotThrow { s().runBatchIfPossible(2) }
 	}
 
 	@Test
 	fun `runBatch processes items`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		val row = posting(vec = vec3, content = "c", st = JooqEvaluationStatus.NEW)
 		whenever(postings.listNewPendingOrderedLimit(1)).thenReturn(listOf(row))
 		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
@@ -325,19 +325,19 @@ class EvaluationServiceTest {
 		whenever(postings.findByUuidsEligibleForSync(any())).thenReturn(
 			listOf(posting(vec = vec3, content = "x", st = JooqEvaluationStatus.NEW)),
 		)
-		whenever(settingsRef.getReferenceContext()).thenThrow(FeignTestSupport.feignError(503))
+		whenever(settingsRef.getReferenceContextVector()).thenThrow(FeignTestSupport.feignError(503))
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncList(UuidsList(listOf(u1))) }.statusCode.value())
 	}
 
 	@Test
 	fun `get reference 202 response`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(ResponseEntity.status(202).build())
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(ResponseEntity.status(202).build())
 		assertEquals(500, assertThrows<ResponseStatusException> { s().evaluateSyncOne(u1, null) }.statusCode.value())
 	}
 
 	@Test
 	fun `evaluate from kafka publishes succeeded`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		val row = posting(vec = vec3, content = "x", st = JooqEvaluationStatus.RELEVANT)
 		whenever(postings.findByUuid(u1)).thenReturn(row)
 		whenever(vectorsApi.cosineSimilarity(any())).thenReturn(
@@ -350,7 +350,7 @@ class EvaluationServiceTest {
 
 	@Test
 	fun `evaluate from kafka publishes failed when not found`() {
-		whenever(settingsRef.getReferenceContext()).thenReturn(refResponse(vec3))
+		whenever(settingsRef.getReferenceContextVector()).thenReturn(refVectorResponse(vec3))
 		whenever(postings.findByUuid(u1)).thenReturn(null)
 		val job = UUID.fromString("e0000000-0000-0000-0000-000000000002")
 		s().evaluateFromKafkaBegin(job, u1)

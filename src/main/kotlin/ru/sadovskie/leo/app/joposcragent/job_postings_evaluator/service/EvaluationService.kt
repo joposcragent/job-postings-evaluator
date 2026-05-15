@@ -14,7 +14,7 @@ import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.store.PostingRow
 import ru.sadovskie.leo.app.joposcragent.job_postings_evaluator.store.PostingsRepository
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.sentence.model.TextCorpus
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.sentence.model.VectorsPair
-import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.settings.model.ReferenceContext
+import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.client.settings.model.ReferenceContextVector
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.EvaluationStatus
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.SyncEvaluationResultItem
 import ru.sadovskie.leo.app.joposcragent.jobpostingsevaluator.openapi.model.UuidsList
@@ -105,7 +105,7 @@ class EvaluationService(
 			log.info("runBatchIfPossible skip batchSize < 1")
 			return
 		}
-		val (refCtx, refVec) = try {
+		val refVec = try {
 			fetchReferenceContextVector()
 		} catch (e: Exception) {
 			log.warn("Пакетная оценка: невозможно загрузить настройки: {}", e.toString(), e)
@@ -124,7 +124,7 @@ class EvaluationService(
 		log.info("runBatchIfPossible candidatesCount={}", page.size)
 		for (p in page) {
 			try {
-				val o = evaluateAndPersistWithPreloaded(p.uuid, null, refCtx, refVec, p, forceReevaluate = false)
+				val o = evaluateAndPersistWithPreloaded(p.uuid, null, refVec, p, forceReevaluate = false)
 				log.info("Пакетная оценка: uuid={} -> {}", p.uuid, o.status)
 			} catch (e: Exception) {
 				log.error("Пакетная оценка: сбой для {}: {}", p.uuid, e.toString(), e)
@@ -136,7 +136,6 @@ class EvaluationService(
 	private data class Outcome(val status: JooqEvaluationStatus, val relevance: Double)
 
 	private data class PreloadedConfig(
-		val refContext: String,
 		val refVector: List<Double>,
 		val posting: PostingRow,
 	)
@@ -153,10 +152,10 @@ class EvaluationService(
 			correlationId?.toString() ?: "-",
 			pre != null,
 		)
-		val (refContext, refVector) = if (pre != null) {
-			pre.refContext to pre.refVector
+		val refVector = if (pre != null) {
+			pre.refVector
 		} else {
-			logStep("settings.getReferenceContext", jobPostingUuid, correlationId) { fetchReferenceContextVector() }
+			logStep("settings.getReferenceContextVector", jobPostingUuid, correlationId) { fetchReferenceContextVector() }
 		}
 		val item: PostingRow = if (pre?.posting != null) {
 			if (!forceReevaluate && pre.posting.evaluationStatus !in EligibleStatuses) {
@@ -180,14 +179,13 @@ class EvaluationService(
 	private fun evaluateAndPersistWithPreloaded(
 		jobPostingUuid: UUID,
 		correlationId: UUID?,
-		refContext: String,
 		refVector: List<Double>,
 		posting: PostingRow,
 		forceReevaluate: Boolean,
 	): Outcome = evaluateAndPersist(
 		jobPostingUuid,
 		correlationId,
-		PreloadedConfig(refContext, refVector, posting),
+		PreloadedConfig(refVector, posting),
 		forceReevaluate,
 	)
 
@@ -258,13 +256,13 @@ class EvaluationService(
 		return row
 	}
 
-	private fun fetchReferenceContextVector(): Pair<String, List<Double>> {
-		val ref: ReferenceContext = try {
-			val res = settingsRef.getReferenceContext()
+	private fun fetchReferenceContextVector(): List<Double> {
+		val ref: ReferenceContextVector = try {
+			val res = settingsRef.getReferenceContextVector()
 			when (res.statusCode.value()) {
 				200 -> res.body ?: throw ResponseStatusException(
 					HttpStatus.INTERNAL_SERVER_ERROR,
-					"Empty reference context from settings",
+					"Empty reference context vector from settings",
 				)
 				404, 202 -> throw ResponseStatusException(
 					HttpStatus.INTERNAL_SERVER_ERROR,
@@ -298,10 +296,10 @@ class EvaluationService(
 				e,
 			)
 		}
-		if (ref.vector.isEmpty() || ref.context.isBlank()) {
-			throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Invalid reference context from settings")
+		if (ref.vector.isEmpty()) {
+			throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Invalid reference context vector from settings")
 		}
-		return ref.context to ref.vector.map { it.toDouble() }
+		return ref.vector.map { it.toDouble() }
 	}
 
 	private fun fetchContentRelevanceThreshold(searchQueryUuid: UUID): Double {
