@@ -33,8 +33,8 @@ class JobPostingEvaluateBeginKafkaListener(
 			log.warn("job-posting-evaluate-begin: invalid json: {}", it.message)
 			return
 		}
-		val payload = root.get("payload") ?: run {
-			log.warn("job-posting-evaluate-begin: missing payload")
+		val payload = root.kafkaMessagePayloadOrNull() ?: run {
+			log.warn("job-posting-evaluate-begin: missing or invalid body")
 			return
 		}
 		val jobUuid = payload.uuid("jobUuid") ?: run {
@@ -55,4 +55,14 @@ class JobPostingEvaluateBeginKafkaListener(
 
 	private fun JsonNode.uuid(field: String): UUID? =
 		get(field)?.takeIf { !it.isNull && it.asText().isNotBlank() }?.let { UUID.fromString(it.asText()) }
+}
+
+private fun JsonNode.kafkaMessagePayloadOrNull(): JsonNode? {
+	val headers = get("headers")
+	val payload = get("payload")
+	return when {
+		headers != null && headers.isObject && payload != null && payload.isObject -> payload
+		isObject -> this
+		else -> null
+	}
 }

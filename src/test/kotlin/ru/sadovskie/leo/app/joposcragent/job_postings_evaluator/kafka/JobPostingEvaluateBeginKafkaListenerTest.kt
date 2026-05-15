@@ -27,10 +27,9 @@ class JobPostingEvaluateBeginKafkaListenerTest {
 		val listener = JobPostingEvaluateBeginKafkaListener(jsonMapper, evaluationService)
 		val job = UUID.fromString("a0000000-0000-0000-0000-000000000001")
 		val posting = UUID.fromString("b0000000-0000-0000-0000-000000000002")
-		val json = """
-			{"headers":{"key":"$job","createdAt":"2026-01-01T12:00:00Z","type":"${JobPostingEvaluateMessageTypes.BEGIN}","schemaVersion":"1.0"},"payload":{"jobUuid":"$job","jobPostingUuid":"$posting"}}
-		""".trimIndent()
+		val json = """{"jobUuid":"$job","jobPostingUuid":"$posting"}"""
 		val record = ConsumerRecord(OrchestrationKafkaTopics.JOB_POSTING_EVALUATE, 0, 0L, job.toString(), json)
+		record.headers().add(RecordHeader("type", JobPostingEvaluateMessageTypes.BEGIN.toByteArray(Charsets.UTF_8)))
 		listener.onMessage(record)
 		verify(evaluationService).evaluateFromKafkaBegin(job, posting)
 	}
@@ -38,8 +37,9 @@ class JobPostingEvaluateBeginKafkaListenerTest {
 	@Test
 	fun `ignores non begin type`() {
 		val listener = JobPostingEvaluateBeginKafkaListener(jsonMapper, evaluationService)
-		val json = """{"headers":{"type":"other"},"payload":{}}"""
+		val json = "{}"
 		val record = ConsumerRecord(OrchestrationKafkaTopics.JOB_POSTING_EVALUATE, 0, 0L, "k", json)
+		record.headers().add(RecordHeader("type", "other".toByteArray(Charsets.UTF_8)))
 		listener.onMessage(record)
 		verifyNoInteractions(evaluationService)
 	}
@@ -94,13 +94,14 @@ class JobPostingEvaluateBeginKafkaListenerTest {
 	}
 
 	@Test
-	fun `uses type from kafka header when present`() {
+	fun `legacy envelope body still routes when kafka headers absent`() {
 		val listener = JobPostingEvaluateBeginKafkaListener(jsonMapper, evaluationService)
 		val job = UUID.fromString("a0000000-0000-0000-0000-000000000001")
 		val posting = UUID.fromString("b0000000-0000-0000-0000-000000000002")
-		val json = """{"payload":{"jobUuid":"$job","jobPostingUuid":"$posting"}}"""
+		val json = """
+			{"headers":{"key":"$job","createdAt":"2026-01-01T12:00:00Z","type":"${JobPostingEvaluateMessageTypes.BEGIN}","schemaVersion":"1.0"},"payload":{"jobUuid":"$job","jobPostingUuid":"$posting"}}
+		""".trimIndent()
 		val record = ConsumerRecord(OrchestrationKafkaTopics.JOB_POSTING_EVALUATE, 0, 0L, job.toString(), json)
-		record.headers().add(RecordHeader("type", JobPostingEvaluateMessageTypes.BEGIN.toByteArray(Charsets.UTF_8)))
 		listener.onMessage(record)
 		verify(evaluationService).evaluateFromKafkaBegin(job, posting)
 	}

@@ -12,6 +12,7 @@ import org.springframework.kafka.core.KafkaTemplate
 import ru.sadovskie.leo.app.joposcragent.jobpostings.jooq.enums.EvaluationStatus
 import tools.jackson.databind.json.JsonMapper
 import tools.jackson.module.kotlin.kotlinModule
+import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 
@@ -35,11 +36,14 @@ class JobPostingEvaluateResultPublisherTest {
 		assertEquals(OrchestrationKafkaTopics.JOB_POSTING_EVALUATE, rec.topic())
 		assertEquals(job.toString(), rec.key())
 		val root = jsonMapper.readTree(rec.value())
-		assertEquals("SUCCEEDED", root.path("payload").path("status").asText())
-		assertEquals(posting.toString(), root.path("payload").path("jobPostingUuid").asText())
-		assertEquals("RELEVANT", root.path("payload").path("evaluationStatus").asText())
-		assertEquals(0.75, root.path("payload").path("relevance").asDouble(), 1e-9)
-		assertEquals(JobPostingEvaluateMessageTypes.RESULT, root.path("headers").path("type").asText())
+		assertEquals("SUCCEEDED", root.path("status").asText())
+		assertEquals(posting.toString(), root.path("jobPostingUuid").asText())
+		assertEquals("RELEVANT", root.path("evaluationStatus").asText())
+		assertEquals(0.75, root.path("relevance").asDouble(), 1e-9)
+		assertEquals(
+			JobPostingEvaluateMessageTypes.RESULT,
+			rec.headers().lastHeader("type")?.value()?.toString(StandardCharsets.UTF_8),
+		)
 	}
 
 	@Test
@@ -53,9 +57,9 @@ class JobPostingEvaluateResultPublisherTest {
 
 		verify { kafka.send(any<ProducerRecord<String, String>>()) }
 		val root = jsonMapper.readTree(slot.captured.value())
-		assertEquals("FAILED", root.path("payload").path("status").asText())
-		assertTrue(root.path("payload").path("result").isTextual)
-		assertEquals("boom", root.path("payload").path("result").asText())
-		assertTrue(root.path("payload").path("evaluationStatus").isMissingNode)
+		assertEquals("FAILED", root.path("status").asText())
+		assertTrue(root.path("result").isTextual)
+		assertEquals("boom", root.path("result").asText())
+		assertTrue(root.path("evaluationStatus").isMissingNode)
 	}
 }

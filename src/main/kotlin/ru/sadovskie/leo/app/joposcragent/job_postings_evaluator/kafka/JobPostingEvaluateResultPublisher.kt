@@ -67,17 +67,7 @@ class JobPostingEvaluateResultPublisher(
 		type: String,
 		payload: ObjectNode,
 	) {
-		val headersNode = jsonMapper.createObjectNode().apply {
-			put("key", messageKey)
-			put("createdAt", createdAt)
-			put("type", type)
-			put("schemaVersion", schemaVersion)
-		}
-		val root = jsonMapper.createObjectNode().apply {
-			set("headers", headersNode)
-			set("payload", payload)
-		}
-		val json = jsonMapper.writeValueAsString(root)
+		val json = jsonMapper.writeValueAsString(payload)
 		val record = ProducerRecord(OrchestrationKafkaTopics.JOB_POSTING_EVALUATE, messageKey, json)
 		record.headers().add(RecordHeader("type", type.toByteArray(StandardCharsets.UTF_8)))
 		record.headers().add(RecordHeader("key", messageKey.toByteArray(StandardCharsets.UTF_8)))
